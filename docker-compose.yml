@@ -1,0 +1,21 @@
+services:
+  hub:
+    build: ./hub
+    image: ip-visualiser-hub:latest
+    container_name: ipvis-hub
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+      DB_PATH: /data/ipvis.db
+      # Set to 0 when the hub is exposed directly instead of behind a reverse proxy.
+      TRUST_PROXY: "1"
+      TZ: ${TZ:-Europe/Istanbul}
+    ports:
+      - "${HUB_BIND:-0.0.0.0}:${HUB_PORT:-8920}:8080"
+    volumes:
+      # Must be writable by uid 1000: `mkdir -p data && chown 1000:1000 data`
+      - ./data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

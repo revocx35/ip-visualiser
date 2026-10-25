@@ -1,0 +1,24 @@
+services:
+  agent:
+    build: .
+    image: ip-visualiser-agent:latest
+    container_name: ipvis-agent
+    restart: unless-stopped
+    environment:
+      # Public (or VPN) address of the hub, e.g. https://hub.example.com
+      HUB_URL: ${HUB_URL:?set HUB_URL in .env}
+      AGENT_TOKEN: ${AGENT_TOKEN:?set AGENT_TOKEN in .env}
+      AGENT_NAME: ${AGENT_NAME:-agent}
+      POLL_MS: ${POLL_MS:-2000}
+      LOG_DIR: /npm-logs
+      NGINX_CONF_DIR: /npm-conf
+      TZ: ${TZ:-Europe/Istanbul}
+    volumes:
+      # Nginx Proxy Manager keeps one access log per proxy host in <data>/logs.
+      - ${NPM_DATA:-/opt/npm/data}/logs:/npm-logs:ro
+      - ${NPM_DATA:-/opt/npm/data}/nginx:/npm-conf:ro
+      - ./state:/state
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

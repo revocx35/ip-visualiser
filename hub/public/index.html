@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>ip-visualiser</title>
+<meta name="theme-color" content="#070b12" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+<div id="boot" class="boot">
+  <div class="brand-logo big">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="11.5" fill="none" stroke="currentColor" stroke-width="1.6"/><ellipse cx="16" cy="16" rx="5" ry="11.5" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".8"/><path d="M4.8 16h22.4M7 10h18M7 22h18" stroke="currentColor" stroke-width="1.2" opacity=".65"/></svg>
+  </div>
+  <p class="boot-text">loading…</p>
+</div>
+
+<div id="main" class="app hidden">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-logo">
+        <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="11.5" fill="none" stroke="currentColor" stroke-width="1.6"/><ellipse cx="16" cy="16" rx="5" ry="11.5" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".8"/><path d="M4.8 16h22.4M7 10h18M7 22h18" stroke="currentColor" stroke-width="1.2" opacity=".65"/></svg>
+      </div>
+      <div class="brand-txt">
+        <span class="brand-name">ip-visualiser</span>
+        <span class="brand-sub">connection map</span>
+      </div>
+    </div>
+
+    <nav class="tabs" id="tabs" aria-label="sections">
+      <button class="tab active" data-page="map">Map</button>
+      <button class="tab" data-page="servers">Servers</button>
+      <button class="tab" data-page="agents">Agents</button>
+      <button class="tab" data-page="settings">Settings</button>
+    </nav>
+
+    <div class="topbar-right">
+      <span class="live" id="live-pill"><i></i><span id="live-label">connecting</span></span>
+      <button class="ghost" id="logout-btn" title="Sign out">Sign out</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="page page-map" id="page-map">
+      <canvas id="map" aria-label="World map of incoming connections"></canvas>
+
+      <div class="hud hud-stats">
+        <div class="stat">
+          <span class="stat-num" id="stat-lines">0</span>
+          <span class="stat-lbl">live lines</span>
+        </div>
+        <div class="stat">
+          <span class="stat-num" id="stat-ips">0</span>
+          <span class="stat-lbl">addresses</span>
+        </div>
+        <div class="stat">
+          <span class="stat-num" id="stat-events">0</span>
+          <span class="stat-lbl">requests</span>
+        </div>
+      </div>
+
+      <div class="hud hud-controls">
+        <div class="ctl-head">
+          <span>time window</span>
+          <strong id="window-label">2h</strong>
+        </div>
+        <input id="window-slider" type="range" min="0" max="100" value="62" step="1" aria-label="Time window" />
+        <div class="ctl-scale"><span>newest</span><span>oldest</span></div>
+        <div class="legend">
+          <span class="legend-bar"></span>
+          <span class="legend-txt">bright = just now · dim = edge of window</span>
+        </div>
+      </div>
+
+      <div class="hud hud-hosts">
+        <div class="ctl-head"><span>top proxy hosts</span></div>
+        <ul id="top-hosts" class="host-list"></ul>
+      </div>
+
+      <div class="empty-hint hidden" id="empty-hint">
+        <strong>Nothing to draw yet</strong>
+        <span id="empty-hint-text">Add a server, then run an agent against it.</span>
+      </div>
+      <div class="tooltip hidden" id="tooltip"></div>
+    </section>
+
+    <section class="page page-pad hidden" id="page-servers">
+      <div class="page-head">
+        <div>
+          <h1>Servers</h1>
+          <p class="muted">A server is a place you receive traffic: your home, your VPS. Agents report connections to one server.</p>
+        </div>
+        <button class="primary" id="add-server-btn">Add server</button>
+      </div>
+      <div class="grid" id="servers-grid"></div>
+    </section>
+
+    <section class="page page-pad hidden" id="page-agents">
+      <div class="page-head">
+        <div>
+          <h1>Agents</h1>
+          <p class="muted">Each agent tails one Nginx Proxy Manager box and streams its connections to this hub.</p>
+        </div>
+      </div>
+      <div class="grid" id="agents-grid"></div>
+    </section>
+
+    <section class="page page-pad hidden" id="page-settings">
+      <div class="page-head">
+        <div>
+          <h1>Settings</h1>
+          <p class="muted">Look and feel, retention of connection data, and the admin account.</p>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>Map</h2>
+        <div class="field">
+          <label for="set-linecolor">Default line colour</label>
+          <div class="row">
+            <input type="color" id="set-linecolor" value="#35e0ff" />
+            <input type="text" id="set-linecolor-hex" class="mono" maxlength="7" value="#35e0ff" />
+            <span class="muted">used for every server without its own colour</span>
+          </div>
+        </div>
+        <div class="field">
+          <label for="set-window">Default time window</label>
+          <div class="row">
+            <input id="set-window" type="range" min="0" max="100" step="1" />
+            <strong id="set-window-label" class="mono">2h</strong>
+          </div>
+          <p class="hint">Brightest line = a connection happening now, dimmest = the edge of the window.</p>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Retention</h2>
+        <div class="field">
+          <label for="set-retention">Keep connection data for</label>
+          <div class="row">
+            <select id="set-retention">
+              <option value="1">1 hour</option>
+              <option value="6">6 hours</option>
+              <option value="12">12 hours</option>
+              <option value="24">24 hours</option>
+              <option value="72">3 days</option>
+              <option value="168">7 days</option>
+              <option value="720">30 days</option>
+              <option value="2160">90 days</option>
+            </select>
+            <span class="muted">older requests are pruned from the database every minute</span>
+          </div>
+          <p class="hint">The map time window can never be longer than the retention.</p>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Admin account</h2>
+        <div class="field">
+          <label>Signed in as</label>
+          <div class="row"><strong id="set-username">—</strong></div>
+        </div>
+        <div class="field">
+          <label for="pw-current">Change password</label>
+          <div class="row pw-row">
+            <input id="pw-current" type="password" autocomplete="current-password" placeholder="current password" />
+            <input id="pw-new" type="password" autocomplete="new-password" placeholder="new password (10+ chars)" />
+            <button class="ghost" id="pw-save">Update</button>
+          </div>
+          <p class="hint" id="pw-status"></p>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="auth" class="auth hidden">
+  <div class="auth-card">
+    <div class="auth-brand">
+      <div class="brand-logo big">
+        <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="11.5" fill="none" stroke="currentColor" stroke-width="1.6"/><ellipse cx="16" cy="16" rx="5" ry="11.5" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".8"/><path d="M4.8 16h22.4M7 10h18M7 22h18" stroke="currentColor" stroke-width="1.2" opacity=".65"/></svg>
+      </div>
+      <h1 id="auth-title">Sign in</h1>
+      <p class="muted" id="auth-sub">Welcome back.</p>
+    </div>
+    <form id="auth-form" autocomplete="on">
+      <div class="field">
+        <label for="auth-user">Username</label>
+        <input id="auth-user" name="username" type="text" autocomplete="username" required minlength="3" maxlength="64" />
+      </div>
+      <div class="field">
+        <label for="auth-pass">Password</label>
+        <input id="auth-pass" name="password" type="password" autocomplete="current-password" required minlength="10" maxlength="200" />
+      </div>
+      <div class="field hidden" id="auth-pass2-wrap">
+        <label for="auth-pass2">Confirm password</label>
+        <input id="auth-pass2" type="password" autocomplete="new-password" minlength="10" maxlength="200" />
+      </div>
+      <p class="form-error hidden" id="auth-error"></p>
+      <button class="primary full" id="auth-submit" type="submit">Sign in</button>
+    </form>
+  </div>
+</div>
+
+<div id="modal-root"></div>
+<script type="module" src="/app.js"></script>
+</body>
+</html>

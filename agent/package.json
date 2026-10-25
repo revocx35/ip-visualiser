@@ -1,0 +1,14 @@
+{
+  "name": "ip-visualiser-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ip-visualiser agent: tails Nginx Proxy Manager access logs and ships connection events to the hub",
+  "scripts": {
+    "start": "node src/agent.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

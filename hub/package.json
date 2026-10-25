@@ -1,0 +1,17 @@
+{
+  "name": "ip-visualiser-hub",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Hub for ip-visualiser: stores connection events from agents and serves the world-map UI",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "dependencies": {
+    "geoip-lite": "^1.4.10"
+  }
+}
