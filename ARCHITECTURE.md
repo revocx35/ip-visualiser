@@ -78,9 +78,15 @@ See `README.md`. All endpoints are JSON; agent ingest is the only token-authenti
 
 ## Threat model
 
-- **Hub exposure:** published on the LAN, fronted by Nginx Proxy Manager with TLS. Ingest is
-  reachable from the internet only if NPM is configured to publish the host — agents are
-  expected to reach it over the LAN or a VPN, and that is the recommended setup.
+- **Hub exposure:** published on the LAN, fronted by Nginx Proxy Manager with TLS and (in this
+  estate) authentik forward auth in front of the UI. `/api/health` and `/api/ingest` are exempt
+  from that gate by design: monitors need an anonymous 200 and agents authenticate with their own
+  token. Everything else — including the SPA and `/api/state` — requires an authentik session,
+  and the app's own admin session still sits on top.
+- **Agents:** reach the hub over the LAN, or over a VPN when the hub is at home and the agent is
+  not (this deployment uses a Hysteria2 tunnel whose TUN device lives in the agent's own network
+  namespace). The ingest endpoint rejects unknown tokens with 401 and never trusts a body it
+  cannot validate.
 - **Agent tokens:** 24 random bytes, stored sha256, returned once, rotatable per agent,
   revocable by deleting the agent. A leaked token can inject fake events for its own server
   and nothing else.

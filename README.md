@@ -69,6 +69,9 @@ POST /api/ingest               {agentVersion, events:[{t, ip, host, b}]} (agent 
 
 ## Notes
 
+- The UI is normally put behind authentik forward auth (NPM advanced config). Two endpoints are
+  deliberately exempt: `/api/health` (uptime monitors) and `/api/ingest` (agents authenticate with
+  their own bearer token). Gating ingest breaks every agent with a 302.
 - Geolocation is local (`geoip-lite`, MaxMind-derived data shipped with the npm package);
   no third-party lookup service is contacted and no client IP leaves the hub.
 - RFC1918/link-local/loopback addresses are counted and stored but not drawn — they have
