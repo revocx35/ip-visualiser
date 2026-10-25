@@ -65,10 +65,13 @@ never built for it, so a write cannot reach the database even by mistake — eve
 405 and every unknown path a 404. The page is the *same* `index.html`, served with
 `data-view-only="1"` injected into the `<html>` tag (no inline script: the CSP forbids it), and
 `app.js` reads that attribute to skip `/api/bootstrap`, `/api/me` and every write, hide the tabs
-and the sign-out button, and poll `/api/view` instead of `/api/state`. The LAN restriction is
-two-layered: the compose port is published on the host's LAN address only (default `127.0.0.1`),
-and `VIEW_ALLOW` CIDR matching in `src/viewallow.js` refuses other peers with a 403 — worth
-having even though a published docker port makes the peer look like the bridge gateway.
+and the sign-out button, poll `/api/view` instead of `/api/state`, and draw 20 frames per second
+instead of 60 (a wall display has nobody watching individual frames, and this cut the CPU of the
+reference kiosk from ~3.2 cores to ~1.0). The LAN restriction is two-layered: the compose port is
+published on the host's LAN address only (default `127.0.0.1`), and `VIEW_ALLOW` CIDR matching in
+`src/viewallow.js` refuses other peers with a 403. Docker's DNAT preserves the client's source
+address for traffic from other hosts (verified: the log shows the real LAN peer), so the CIDR check
+sees the actual client; only hairpin traffic from the docker host itself can look like the gateway.
 
 ### UI
 
