@@ -55,6 +55,21 @@ the last N hours?* One hub, many agents — one agent per Nginx Proxy Manager in
 - **Sessions:** random 32-byte token in an `HttpOnly; SameSite=Lax` cookie (plus `Secure`
   behind TLS), stored as sha256, 7-day sliding expiry, one row per session.
 
+### View-only listener
+
+A second `http.Server` on `VIEW_PORT` reuses the same DB, geo resolver and state builder but
+gets its **own** `buildApi(..., { viewOnly: true })` instance. That instance starts from an
+empty route table and registers only four public GETs (`/api/view`, `/api/servers/:id/connections`,
+`/api/auth-events`, `/api/health`); the authenticated routes, session lookup and CSRF check are
+never built for it, so a write cannot reach the database even by mistake — every non-GET is a
+405 and every unknown path a 404. The page is the *same* `index.html`, served with
+`data-view-only="1"` injected into the `<html>` tag (no inline script: the CSP forbids it), and
+`app.js` reads that attribute to skip `/api/bootstrap`, `/api/me` and every write, hide the tabs
+and the sign-out button, and poll `/api/view` instead of `/api/state`. The LAN restriction is
+two-layered: the compose port is published on the host's LAN address only (default `127.0.0.1`),
+and `VIEW_ALLOW` CIDR matching in `src/viewallow.js` refuses other peers with a 403 — worth
+having even though a published docker port makes the peer look like the bridge gateway.
+
 ### UI
 
 Vanilla ES modules, one canvas, no bundler:
@@ -107,6 +122,11 @@ See `README.md`. All endpoints are JSON; agent ingest is the only token-authenti
 - **Agent tokens:** 24 random bytes, stored sha256, returned once, rotatable per agent,
   revocable by deleting the agent. A leaked token can inject fake events for its own server
   and nothing else.
+- **View-only port:** intentionally unauthenticated, so it is bound to the LAN address and
+  further filtered by `VIEW_ALLOW`. Its API surface is read-only by construction (its own route
+  table has no write handlers); it exposes server names, client IPs and proxy hostnames to
+  anyone on the local network, which is the accepted trade-off for a screen with no login.
+  Never publish it through the reverse proxy or a port forward.
 - **Admin:** scrypt (N=16384) password hashing, 10-char minimum, per-IP throttle (5 free
   failures then 30 s doubling to 15 min), generic error messages, session invalidation on
   password change.

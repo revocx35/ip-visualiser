@@ -36,6 +36,33 @@ docker compose up -d --build               # publishes 8920 -> 8080
 Open the UI, create the admin account on first visit, add a server
 (name + place it on the mini map), then press **Add agent** to get a token.
 
+## View-only port (wall display)
+
+The hub can open a **second port that serves the map and nothing else**: no login, no tabs,
+no settings, no write endpoints. It exists so a screen on the LAN (a kiosk, a TV, an old
+iMac) can show the map permanently without a session that expires or an SSO redirect.
+
+```
+VIEW_PORT=8921                      # port inside the container; 0/empty disables the listener
+VIEW_ALLOW=192.168.0.0/16           # comma-separated CIDRs allowed to connect (default: RFC1918 + loopback)
+```
+
+and publish it on the LAN address only — this is the real access control:
+
+```yaml
+ports:
+  - "192.168.1.10:8921:8921"         # VIEW_HOST_BIND in the compose file
+```
+
+What the view listener serves: `GET /` (the same page with `data-view-only="1"`, so the UI
+runs in map-only mode), the five static assets it needs, `GET /api/view` (the map feed — the
+same payload as `/api/state`), `GET /api/servers/:id/connections`, `GET /api/auth-events` and
+`GET /api/health`. Every other path is a 404 and every non-GET is a 405; no session, no
+cookie, no admin route exists on that port. Peers outside `VIEW_ALLOW` get a 403.
+
+Do **not** put this port behind the reverse proxy — the point is that it needs no
+authentication, which is only acceptable because it is LAN-bound and read-only.
+
 ## Deploy an agent
 
 ```sh
@@ -55,6 +82,7 @@ GET  /api/bootstrap            setupRequired, version
 POST /api/setup                first-run admin creation
 POST /api/login | /api/logout  session cookie (HttpOnly, SameSite=Lax)
 GET  /api/state?window=120     servers, agents, settings, connections, stats
+GET  /api/view?window=120      the same payload, public, **view-only listener only**
 GET  /api/servers              list
 GET  /api/servers/:id/connections?minutes=60   addresses that reached one server, newest first
 POST /api/servers              {name, lat, lon, color?}

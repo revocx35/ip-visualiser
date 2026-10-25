@@ -10,6 +10,11 @@ services:
       # Set to 0 when the hub is exposed directly instead of behind a reverse proxy.
       TRUST_PROXY: "1"
       TZ: ${TZ:-Europe/Istanbul}
+      # View-only listener: no login, map only, read-only API. VIEW_HOST_BIND below decides
+      # who can reach it — 127.0.0.1 (default) is host-local, set it to the host's LAN
+      # address to allow the local network. See README "View-only port".
+      VIEW_PORT: "${VIEW_PORT:-8921}"
+      VIEW_ALLOW: ${VIEW_ALLOW:-}
       # Optional: authentik login events (see README). Leave empty to disable.
       AUTHENTIK_INSTANCES: ${AUTHENTIK_INSTANCES:-}
       AUTHENTIK_URL: ${AUTHENTIK_URL:-}
@@ -20,6 +25,7 @@ services:
       AUTHENTIK_POLL_MS: ${AUTHENTIK_POLL_MS:-30000}
     ports:
       - "${HUB_BIND:-0.0.0.0}:${HUB_PORT:-8920}:8080"
+      - "${VIEW_HOST_BIND:-127.0.0.1}:${VIEW_PORT:-8921}:${VIEW_PORT:-8921}"
     volumes:
       # Must be writable by uid 1000: `mkdir -p data && chown 1000:1000 data`
       - ./data:/data

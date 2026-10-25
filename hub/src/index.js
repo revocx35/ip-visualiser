@@ -8,15 +8,24 @@ import { getSettings, openDb, prune } from './db.js';
 import { buildApi, HttpError } from './api.js';
 import { createGeoResolver, normalizeIp } from './geo.js';
 import { createAuthentikPollers } from './authentik.js';
+import { isViewAllowed, parseCidrs } from './viewallow.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+const PKG = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
 
 const PORT = Number(process.env.PORT || 8080);
 const DB_PATH = process.env.DB_PATH || '/data/ipvis.db';
 const TRUST_PROXY = process.env.TRUST_PROXY !== '0';
 const MAX_BODY = 4 * 1024 * 1024;
-const VERSION = '1.3.0';
+const VERSION = PKG.version;
+
+// View-only listener: a second port with no login that serves nothing but the map
+// (read-only API + the shell). 0 = disabled. See README "View-only port".
+const VIEW_PORT = Number(process.env.VIEW_PORT || 0);
+const VIEW_BIND = process.env.VIEW_BIND || '0.0.0.0';
+const VIEW_ALLOW = parseCidrs(process.env.VIEW_ALLOW);
+const VIEW_FILES = new Set(['/style.css', '/app.js', '/viewmath.js', '/world.json', '/favicon.svg']);
 
 const log = {
   line(level, msg, extra) {
@@ -107,7 +116,10 @@ if (akConfigs.length) {
   });
 }
 
-const handleApi = buildApi({ db, throttle, log, geo, authentik });
+const handleApi = buildApi({ db, throttle, log, geo, authentik, version: VERSION });
+const handleViewApi = VIEW_PORT
+  ? buildApi({ db, throttle, log, geo, authentik, version: VERSION, viewOnly: true })
+  : null;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -214,6 +226,18 @@ async function serveStatic(req, res, url) {
   fs.createReadStream(filePath).pipe(res);
 }
 
+function sendError(res, err, pathname) {
+  if (res.headersSent) {
+    res.end();
+    return;
+  }
+  const status = err instanceof HttpError ? err.status : 500;
+  if (status >= 500) log.error('request failed', { path: pathname, error: String(err && err.message) });
+  const payload = JSON.stringify({ error: status >= 500 ? 'internal error' : err.message });
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+  res.end(payload);
+}
+
 const server = http.createServer(async (req, res) => {
   const secure = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https' || Boolean(req.socket.encrypted);
   securityHeaders(res, secure);
@@ -267,15 +291,7 @@ const server = http.createServer(async (req, res) => {
     const handled = await handleApi(ctx);
     if (!handled) throw new HttpError(404, 'not found');
   } catch (err) {
-    if (res.headersSent) {
-      res.end();
-      return;
-    }
-    const status = err instanceof HttpError ? err.status : 500;
-    if (status >= 500) log.error('request failed', { path: url.pathname, error: String(err && err.message) });
-    const payload = JSON.stringify({ error: status >= 500 ? 'internal error' : err.message });
-    res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-    res.end(payload);
+    sendError(res, err, url.pathname);
   } finally {
     if (url.pathname.startsWith('/api/') && url.pathname !== '/api/state') {
       log.info('api', { method: req.method, path: url.pathname, status: res.statusCode, ms: Date.now() - started });
@@ -284,6 +300,59 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => log.info('hub listening', { port: PORT, version: VERSION }));
+
+// ---- view-only listener ---------------------------------------------------
+// No session, no writes, LAN peers only. The compose file publishes this port on the
+// host's LAN address so it is never reachable from outside the network.
+let viewServer = null;
+
+async function serveViewShell(req, res) {
+  const shell = await fsp.readFile(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
+  const html = shell.replace('<html lang="en"', '<html lang="en" data-view-only="1"');
+  res.writeHead(200, {
+    'content-type': 'text/html; charset=utf-8',
+    'content-length': Buffer.byteLength(html),
+    'cache-control': 'no-store',
+  });
+  res.end(html);
+}
+
+if (VIEW_PORT) {
+  viewServer = http.createServer(async (req, res) => {
+    securityHeaders(res, false);
+    const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+    const peer = normalizeIp(req.socket.remoteAddress);
+    const started = Date.now();
+    try {
+      if (!isViewAllowed(peer, VIEW_ALLOW)) {
+        log.warn('view-only access denied', { peer, path: url.pathname });
+        throw new HttpError(403, 'the view-only endpoint is only reachable from the local network');
+      }
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        res.setHeader('allow', 'GET, HEAD');
+        throw new HttpError(405, 'the view-only endpoint is read-only');
+      }
+      if (url.pathname === '/' || url.pathname === '/index.html') {
+        await serveViewShell(req, res);
+      } else if (VIEW_FILES.has(url.pathname)) {
+        await serveStatic(req, res, url);
+      } else {
+        const ctx = { req, res, url, body: null, user: null, clientIp: peer, secure: false, method: req.method };
+        const handled = await handleViewApi(ctx);
+        if (!handled) throw new HttpError(404, 'not found');
+      }
+    } catch (err) {
+      sendError(res, err, url.pathname);
+    } finally {
+      if (url.pathname.startsWith('/api/') && url.pathname !== '/api/view') {
+        log.info('view api', { method: req.method, path: url.pathname, peer, status: res.statusCode, ms: Date.now() - started });
+      }
+    }
+  });
+  viewServer.listen(VIEW_PORT, VIEW_BIND, () =>
+    log.info('view-only listener up', { port: VIEW_PORT, bind: VIEW_BIND, allow: VIEW_ALLOW }),
+  );
+}
 
 // Retention: prune aggressively but cheaply.
 const pruneTimer = setInterval(() => {
@@ -301,6 +370,7 @@ function shutdown(signal) {
   log.info('shutting down', { signal });
   geo.stop();
   if (authentik) authentik.stop();
+  if (viewServer) viewServer.close();
   server.close(() => {
     try {
       db.close();

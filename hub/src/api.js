@@ -52,7 +52,7 @@ function agentRow(row) {
   };
 }
 
-export function buildApi({ db, throttle, log, geo, authentik = null }) {
+export function buildApi({ db, throttle, log, geo, authentik = null, version = '0.0.0', viewOnly = false }) {
   const handlers = [];
   const route = (method, pattern, opts, handler) => handlers.push({ method, pattern, ...opts, handler });
 
@@ -60,11 +60,14 @@ export function buildApi({ db, throttle, log, geo, authentik = null }) {
   const pub = (method, pattern, handler) => publicRoutes.push({ method, pattern, handler });
 
   // ---- public -----------------------------------------------------------
-  pub('GET', /^\/api\/health$/, async (ctx) => json(ctx.res, 200, { ok: true, version: '1.5.0', geo: geo.stats(), ...(authentik ? { authentik: authentik.stats() } : {}) }));
+  const healthHandler = async (ctx) =>
+    json(ctx.res, 200, { ok: true, version, geo: geo.stats(), ...(authentik ? { authentik: authentik.stats() } : {}) });
+
+  pub('GET', /^\/api\/health$/, healthHandler);
 
   pub('GET', /^\/api\/bootstrap$/, async (ctx) => {
     const users = Number(db.prepare('SELECT COUNT(*) AS n FROM users').get().n);
-    json(ctx.res, 200, { setupRequired: users === 0, app: 'ip-visualiser', version: '1.5.0' });
+    json(ctx.res, 200, { setupRequired: users === 0, app: 'ip-visualiser', version });
   });
 
   pub('POST', /^\/api\/setup$/, async (ctx) => {
@@ -125,7 +128,9 @@ export function buildApi({ db, throttle, log, geo, authentik = null }) {
 
   route('GET', /^\/api\/me$/, {}, async (ctx) => json(ctx.res, 200, { user: { id: ctx.user.id, username: ctx.user.username } }));
 
-  route('GET', /^\/api\/state$/, {}, async (ctx) => {
+  // Map feed. `GET /api/state` is the authenticated original; the view-only listener
+  // exposes the same payload as `GET /api/view` so the kiosk needs no session.
+  const stateHandler = async (ctx) => {
     const settings = getSettings(db);
     const windowMin = Math.min(1440, Math.max(1, Number(ctx.url.searchParams.get('window') || settings.timeWindowMinutes) || 120));
     const since = Math.floor(Date.now() / 1000) - windowMin * 60;
@@ -243,7 +248,9 @@ export function buildApi({ db, throttle, log, geo, authentik = null }) {
         topHosts,
       },
     });
-  });
+  };
+
+  route('GET', /^\/api\/state$/, {}, stateHandler);
 
   route('POST', /^\/api\/password$/, {}, async (ctx) => {
     const current = requireString(ctx.body?.current, 'current', { min: 1, max: 200 });
@@ -257,7 +264,7 @@ export function buildApi({ db, throttle, log, geo, authentik = null }) {
   });
 
   // authentik login attempts (successful and failed) for the last N minutes.
-  route('GET', /^\/api\/auth-events$/, {}, async (ctx) => {
+  const authEventsHandler = async (ctx) => {
     if (!authentik) throw new HttpError(404, 'authentik integration is not configured');
     const minutes = Math.round(clampNumber(ctx.url.searchParams.get('minutes') || 60, 'minutes', 1, 1440));
     const limit = Math.round(clampNumber(ctx.url.searchParams.get('limit') || 80, 'limit', 1, 300));
@@ -310,10 +317,12 @@ export function buildApi({ db, throttle, log, geo, authentik = null }) {
     });
 
     json(ctx.res, 200, { minutes, summary, items });
-  });
+  };
+
+  route('GET', /^\/api\/auth-events$/, {}, authEventsHandler);
 
   // Addresses that reached one server during the last N minutes (default: one hour).
-  route('GET', /^\/api\/servers\/(\d+)\/connections$/, {}, async (ctx, id) => {
+  const connectionsHandler = async (ctx, id) => {
     const server = db.prepare('SELECT id, name FROM servers WHERE id = ?').get(id);
     if (!server) throw new HttpError(404, 'server not found');
     const minutes = Math.round(clampNumber(ctx.url.searchParams.get('minutes') || 60, 'minutes', 1, 1440));
@@ -366,7 +375,9 @@ export function buildApi({ db, throttle, log, geo, authentik = null }) {
     );
 
     json(ctx.res, 200, { server: { id: Number(server.id), name: server.name }, minutes, total, items });
-  });
+  };
+
+  route('GET', /^\/api\/servers\/(\d+)\/connections$/, {}, connectionsHandler);
 
   route('GET', /^\/api\/servers$/, {}, async (ctx) => {
     const rows = db.prepare('SELECT * FROM servers ORDER BY id').all().map(serverRow);
@@ -497,13 +508,40 @@ export function buildApi({ db, throttle, log, geo, authentik = null }) {
     return parts.join('; ');
   }
 
+  // View-only listener (`VIEW_PORT`): a second API surface with no session, no writes and
+  // no admin routes at all — just the map feed and the two read-only detail endpoints the
+  // map itself calls. Anything else is a 404, every non-GET is a 405.
+  if (viewOnly) {
+    // Start from an empty surface: nothing registered for the authenticated hub leaks in.
+    publicRoutes.length = 0;
+    pub('GET', /^\/api\/view$/, stateHandler);
+    pub('GET', /^\/api\/servers\/(\d+)\/connections$/, connectionsHandler);
+    pub('GET', /^\/api\/auth-events$/, authEventsHandler);
+    pub('GET', /^\/api\/health$/, healthHandler);
+
+    return async function handleViewApi(ctx) {
+      const path = ctx.url.pathname;
+      if (!path.startsWith('/api/')) return false;
+      const readMethod = ctx.method === 'GET' || ctx.method === 'HEAD';
+      if (!readMethod) throw new HttpError(405, 'the view-only endpoint is read-only');
+      for (const r of publicRoutes) {
+        if (r.method !== 'GET' || !r.pattern.test(path)) continue;
+        const args = path.match(r.pattern).slice(1).map((v) => (v === undefined ? undefined : Number(v)));
+        await r.handler(ctx, ...args);
+        return true;
+      }
+      throw new HttpError(404, 'not found');
+    };
+  }
+
   return async function handleApi(ctx) {
     const path = ctx.url.pathname;
     if (!path.startsWith('/api/')) return false;
 
     for (const r of publicRoutes) {
       if (r.method === ctx.method && r.pattern.test(path)) {
-        await r.handler(ctx);
+        const args = path.match(r.pattern).slice(1).map((v) => (v === undefined ? undefined : Number(v)));
+        await r.handler(ctx, ...args);
         return true;
       }
     }

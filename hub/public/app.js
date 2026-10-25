@@ -2,6 +2,10 @@
 
 import { clampPan, clampZoom, zoomAt } from './viewmath.js';
 
+// The hub's view-only listener serves this same page with data-view-only="1": no login,
+// map only, no controls that would write anything.
+const VIEW_ONLY = document.documentElement.dataset.viewOnly === '1';
+
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
@@ -76,7 +80,7 @@ async function api(path, opts = {}) {
     ...opts,
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
-  if (res.status === 401 && !path.startsWith('/api/login') && !path.startsWith('/api/setup')) {
+  if (res.status === 401 && !VIEW_ONLY && !path.startsWith('/api/login') && !path.startsWith('/api/setup')) {
     showAuth('login');
     throw new Error('not signed in');
   }
@@ -182,6 +186,7 @@ $('#tabs').addEventListener('click', (e) => {
 });
 
 function setPage(page) {
+  if (VIEW_ONLY && page !== 'map') return;
   state.page = page;
   $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.page === page));
   for (const name of ['map', 'servers', 'agents', 'settings']) {
@@ -212,7 +217,7 @@ async function enterApp() {
 }
 
 async function loadStatic() {
-  const data = await api('/api/state?window=' + encodeURIComponent(state.windowMinutes));
+  const data = await api((VIEW_ONLY ? '/api/view?window=' : '/api/state?window=') + encodeURIComponent(state.windowMinutes));
   applyState(data);
 }
 
@@ -237,7 +242,7 @@ function applyState(data) {
 
 async function refresh(first = false) {
   try {
-    const data = await api('/api/state?window=' + encodeURIComponent(state.windowMinutes));
+    const data = await api((VIEW_ONLY ? '/api/view?window=' : '/api/state?window=') + encodeURIComponent(state.windowMinutes));
     applyState(data);
   } catch (err) {
     state.live = false;
@@ -1057,6 +1062,10 @@ $('#thickness-slider').addEventListener('input', (e) => {
   $('#thickness-label').textContent = fmtThickness(v);
 });
 $('#thickness-slider').addEventListener('change', () => {
+  if (VIEW_ONLY) {
+    syncThickness();
+    return;
+  }
   saveSettings({ lineWidth: Number(state.settings.lineWidth) }).then(syncThickness);
 });
 
@@ -1087,7 +1096,9 @@ function updateHud() {
   const empty = $('#empty-hint');
   if (!state.servers.length) {
     empty.classList.remove('hidden');
-    $('#empty-hint-text').textContent = 'Add your first server in the Servers tab, then attach an agent.';
+    $('#empty-hint-text').textContent = VIEW_ONLY
+      ? 'No servers configured on the hub yet.'
+      : 'Add your first server in the Servers tab, then attach an agent.';
   } else if (!visible.length) {
     empty.classList.remove('hidden');
     $('#empty-hint-text').textContent = 'No mapped connections in this window — agents are idle or the window is too short.';
@@ -1556,6 +1567,19 @@ $('#pw-save').addEventListener('click', async () => {
 
 async function boot() {
   map.init();
+  if (VIEW_ONLY) {
+    for (const sel of ['#tabs', '#logout-btn']) {
+      const el = $(sel);
+      if (el) el.classList.add('hidden');
+    }
+    try {
+      await enterApp();
+      $('#boot').classList.add('hidden');
+    } catch (err) {
+      $('#boot').innerHTML = `<p class="boot-text">map unreachable: ${esc(err.message)}</p>`;
+    }
+    return;
+  }
   try {
     const b = await api('/api/bootstrap');
     if (b.setupRequired) {
