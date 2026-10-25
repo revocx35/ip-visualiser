@@ -74,6 +74,8 @@ POST /api/ingest               {agentVersion, events:[{t, ip, host, b}]} (agent 
   their own bearer token). Gating ingest breaks every agent with a 302.
 - Geolocation is local (`geoip-lite`, MaxMind-derived data shipped with the npm package);
   no third-party lookup service is contacted and no client IP leaves the hub.
+- The map zooms (scroll, pinch, +/− buttons, double-click) and pans (drag), 1×–12×; the
+  graticule densifies as you zoom in.
 - RFC1918/link-local/loopback addresses are counted and stored but not drawn — they have
   no place on a world map.
 - Connection data is aggregated per minute per (server, ip, host), so a busy proxy does

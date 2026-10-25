@@ -60,11 +60,11 @@ export function buildApi({ db, throttle, log }) {
   const pub = (method, pattern, handler) => publicRoutes.push({ method, pattern, handler });
 
   // ---- public -----------------------------------------------------------
-  pub('GET', /^\/api\/health$/, async (ctx) => json(ctx.res, 200, { ok: true, version: '1.0.0' }));
+  pub('GET', /^\/api\/health$/, async (ctx) => json(ctx.res, 200, { ok: true, version: '1.1.0' }));
 
   pub('GET', /^\/api\/bootstrap$/, async (ctx) => {
     const users = Number(db.prepare('SELECT COUNT(*) AS n FROM users').get().n);
-    json(ctx.res, 200, { setupRequired: users === 0, app: 'ip-visualiser', version: '1.0.0' });
+    json(ctx.res, 200, { setupRequired: users === 0, app: 'ip-visualiser', version: '1.1.0' });
   });
 
   pub('POST', /^\/api\/setup$/, async (ctx) => {

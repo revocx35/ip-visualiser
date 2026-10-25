@@ -1,5 +1,7 @@
 // ip-visualiser hub UI — vanilla ES module, no build step.
 
+import { clampPan, clampZoom, zoomAt } from './viewmath.js';
+
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
@@ -256,12 +258,16 @@ const map = {
   land: null,
   base: null,
   rect: { x0: 0, y0: 0, scale: 1 },
+  view: { zoom: 1, ox: 0, oy: 0 },
   hits: [],
   hover: null,
   width: 0,
   height: 0,
   dpr: 1,
   dirty: true,
+  pointers: new Map(),
+  drag: null,
+  pinch: null,
 
   init() {
     this.canvas = $('#map');
@@ -269,11 +275,26 @@ const map = {
     new ResizeObserver(() => this.resize()).observe(this.canvas.parentElement);
     this.resize();
     this.loadLand();
-    this.canvas.addEventListener('mousemove', (e) => this.onMove(e));
+
+    this.canvas.addEventListener('mousemove', (e) => this.onHover(e));
     this.canvas.addEventListener('mouseleave', () => {
       this.hover = null;
       $('#tooltip').classList.add('hidden');
     });
+    this.canvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
+    this.canvas.addEventListener('dblclick', (e) => {
+      const r = this.canvas.getBoundingClientRect();
+      this.zoomBy(1.7, { x: e.clientX - r.left, y: e.clientY - r.top });
+    });
+    this.canvas.addEventListener('pointerdown', (e) => this.onPointerDown(e));
+    this.canvas.addEventListener('pointermove', (e) => this.onPointerMove(e));
+    this.canvas.addEventListener('pointerup', (e) => this.onPointerUp(e));
+    this.canvas.addEventListener('pointercancel', (e) => this.onPointerUp(e));
+
+    $('#zoom-in').addEventListener('click', () => this.zoomBy(1.6));
+    $('#zoom-out').addEventListener('click', () => this.zoomBy(1 / 1.6));
+    $('#zoom-reset').addEventListener('click', () => this.resetView());
+
     const loop = () => {
       requestAnimationFrame(loop);
       try {
@@ -311,76 +332,116 @@ const map = {
     this.rect = {
       scale,
       x0: (w - 360 * scale) / 2,
-      y0: (h - 180 * scale) / 2 + (w < 700 ? 6 : 0),
-      w: 360 * scale,
-      h: 180 * scale,
+      y0: (h - 180 * scale) / 2,
     };
+    this.clampView();
     this.base = null;
     this.dirty = true;
   },
 
-  project(lon, lat) {
+  centre() {
+    return { x: this.width / 2, y: this.height / 2 };
+  },
+
+  /** Projected map rectangle at the current zoom, before panning. */
+  bounds() {
     const { x0, y0, scale } = this.rect;
-    return [x0 + (lon + 180) * scale, y0 + (90 - lat) * scale];
+    const c = this.centre();
+    const z = this.view.zoom;
+    const left = c.x + (x0 - c.x) * z;
+    const top = c.y + (y0 - c.y) * z;
+    return { left, top, right: left + 360 * scale * z, bottom: top + 180 * scale * z };
+  },
+
+  clampView() {
+    const { ox, oy } = clampPan(
+      this.bounds(),
+      { width: this.width, height: this.height },
+      this.view.ox,
+      this.view.oy,
+    );
+    this.view.ox = ox;
+    this.view.oy = oy;
+  },
+
+  projectRaw(lon, lat) {
+    const { x0, y0, scale } = this.rect;
+    const c = this.centre();
+    const z = this.view.zoom;
+    const bx = x0 + (lon + 180) * scale;
+    const by = y0 + (90 - lat) * scale;
+    return [c.x + (bx - c.x) * z, c.y + (by - c.y) * z];
+  },
+
+  project(lon, lat) {
+    const [x, y] = this.projectRaw(lon, lat);
+    return [x + this.view.ox, y + this.view.oy];
   },
 
   unproject(x, y) {
+    const c = this.centre();
+    const z = this.view.zoom;
+    const bx = (x - this.view.ox - c.x) / z + c.x;
+    const by = (y - this.view.oy - c.y) / z + c.y;
     const { x0, y0, scale } = this.rect;
-    return { lon: (x - x0) / scale - 180, lat: 90 - (y - y0) / scale };
+    return { lon: (bx - x0) / scale - 180, lat: 90 - (by - y0) / scale };
   },
 
   buildBase() {
+    // The base is drawn for the current zoom AND pan, then blitted 1:1, so panning never
+    // exposes an uncovered strip at the canvas edge.
     const { width: w, height: h, dpr } = this;
+    const ox = this.view.ox;
+    const oy = this.view.oy;
     const c = document.createElement('canvas');
     c.width = Math.max(1, Math.round(w * dpr));
     c.height = Math.max(1, Math.round(h * dpr));
     const ctx = c.getContext('2d');
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    const { x0, y0, scale } = this.rect;
-    const mw = 360 * scale;
-    const mh = 180 * scale;
+    const z = this.view.zoom;
+    const raw = this.bounds();
+    const b = { left: raw.left + ox, top: raw.top + oy, right: raw.right + ox, bottom: raw.bottom + oy };
+    const pj = (lon, lat) => {
+      const [x, y] = this.projectRaw(lon, lat);
+      return [x + ox, y + oy];
+    };
 
-    // ocean glow
-    const grad = ctx.createRadialGradient(x0 + mw / 2, y0 + mh / 2, 0, x0 + mw / 2, y0 + mh / 2, mw * 0.62);
-    grad.addColorStop(0, 'rgba(20, 44, 74, 0.55)');
-    grad.addColorStop(1, 'rgba(8, 15, 26, 0)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, w, h);
-
+    // ocean plate
     ctx.save();
-    ctx.fillStyle = 'rgba(9, 20, 34, 0.55)';
+    ctx.fillStyle = 'rgba(11, 23, 38, 0.72)';
     ctx.strokeStyle = 'rgba(96, 150, 200, 0.22)';
     ctx.beginPath();
-    ctx.roundRect(x0, y0, mw, mh, 10);
+    ctx.roundRect(b.left, b.top, b.right - b.left, b.bottom - b.top, Math.max(4, 10 * Math.min(z, 2)));
     ctx.fill();
     ctx.stroke();
     ctx.restore();
 
-    // graticule
+    // graticule — denser as you zoom in
+    const step = z < 1.6 ? 30 : z < 3.5 ? 15 : z < 7 ? 10 : 5;
     ctx.save();
     ctx.strokeStyle = 'rgba(96, 140, 190, 0.14)';
     ctx.lineWidth = 1;
-    for (let lon = -180; lon <= 180; lon += 30) {
-      const [x] = this.project(lon, 0);
+    for (let lon = -180; lon <= 180; lon += step) {
+      const [x] = pj(lon, 0);
       ctx.beginPath();
-      ctx.moveTo(x, y0);
-      ctx.lineTo(x, y0 + mh);
+      ctx.moveTo(x, b.top);
+      ctx.lineTo(x, b.bottom);
       ctx.stroke();
     }
-    for (let lat = -60; lat <= 60; lat += 30) {
-      const [, y] = this.project(0, lat);
+    for (let lat = -90; lat <= 90; lat += step) {
+      const [, y] = pj(0, lat);
+      if (y < b.top - 1 || y > b.bottom + 1) continue;
       ctx.beginPath();
-      ctx.moveTo(x0, y);
-      ctx.lineTo(x0 + mw, y);
+      ctx.moveTo(b.left, y);
+      ctx.lineTo(b.right, y);
       ctx.stroke();
     }
-    // equator a touch brighter
-    ctx.strokeStyle = 'rgba(120, 170, 220, 0.22)';
-    const [, eqY] = this.project(0, 0);
+    ctx.strokeStyle = 'rgba(120, 170, 220, 0.24)';
+    const [, eqY] = pj(0, 0);
     ctx.beginPath();
-    ctx.moveTo(x0, eqY);
-    ctx.lineTo(x0 + mw, eqY);
+    ctx.moveTo(b.left, eqY);
+    ctx.lineTo(b.right, eqY);
     ctx.stroke();
     ctx.restore();
 
@@ -394,7 +455,7 @@ const map = {
           for (const ring of poly) {
             let prevLon = null;
             for (const [lon, lat] of ring) {
-              const [px, py] = this.project(lon, lat);
+              const [px, py] = pj(lon, lat);
               // A ring crossing the antimeridian would otherwise draw a stripe across the map.
               if (prevLon === null || Math.abs(lon - prevLon) > 180) ctx.moveTo(px, py);
               else ctx.lineTo(px, py);
@@ -403,7 +464,7 @@ const map = {
           }
         }
       }
-      const landGrad = ctx.createLinearGradient(0, y0, 0, y0 + mh);
+      const landGrad = ctx.createLinearGradient(0, b.top, 0, b.bottom);
       landGrad.addColorStop(0, '#1d2f42');
       landGrad.addColorStop(0.45, '#182a3c');
       landGrad.addColorStop(1, '#1b2c3e');
@@ -416,9 +477,9 @@ const map = {
     }
 
     // frame
-    ctx.strokeStyle = 'rgba(96, 140, 190, 0.16)';
+    ctx.strokeStyle = 'rgba(96, 140, 190, 0.18)';
     ctx.lineWidth = 1;
-    ctx.strokeRect(x0 + 0.5, y0 + 0.5, mw - 1, mh - 1);
+    ctx.strokeRect(b.left + 0.5, b.top + 0.5, b.right - b.left - 1, b.bottom - b.top - 1);
     return c;
   },
 
@@ -430,7 +491,17 @@ const map = {
       this.dirty = false;
     }
     if (!this.base || !this.base.width) return;
+
+    const c = this.centre();
     ctx.clearRect(0, 0, this.width, this.height);
+
+    // backdrop glow stays in screen space so it does not travel while panning
+    const glow = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, Math.max(this.width, this.height) * 0.62);
+    glow.addColorStop(0, 'rgba(20, 44, 74, 0.5)');
+    glow.addColorStop(1, 'rgba(8, 15, 26, 0)');
+    ctx.fillStyle = glow;
+    ctx.fillRect(0, 0, this.width, this.height);
+
     ctx.drawImage(this.base, 0, 0, this.width, this.height);
 
     const now = Math.floor(Date.now() / 1000);
@@ -520,7 +591,6 @@ const map = {
     const color = server.color || defaultColor;
     const size = 24;
     ctx.save();
-    // halo
     if (recent) {
       const g = ctx.createRadialGradient(x, y, 0, x, y, 30);
       g.addColorStop(0, rgba(color, 0.26 * (1 - pulse)));
@@ -530,7 +600,6 @@ const map = {
       ctx.arc(x, y, 30, 0, Math.PI * 2);
       ctx.fill();
     }
-    // tile
     const r = 7;
     const x0 = x - size / 2;
     const y0 = y - size / 2;
@@ -547,7 +616,6 @@ const map = {
     ctx.lineWidth = 1.3;
     ctx.stroke();
 
-    // server glyph: two stacked racks
     ctx.fillStyle = rgba(color, 0.95);
     for (let i = 0; i < 2; i += 1) {
       const ry = y0 + 6 + i * 8;
@@ -555,13 +623,11 @@ const map = {
       ctx.roundRect(x0 + 6, ry, size - 12, 5, 1.6);
       ctx.fill();
     }
-    // dot
     ctx.fillStyle = recent ? '#eafcff' : rgba(color, 0.4);
     ctx.beginPath();
     ctx.arc(x0 + size - 8.4, y0 + 8.6, 1.6, 0, Math.PI * 2);
     ctx.fill();
 
-    // label
     ctx.font = '600 11.5px ui-sans-serif, system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
@@ -576,7 +642,101 @@ const map = {
     ctx.restore();
   },
 
-  onMove(e) {
+  /* ------------------------------------------------------------ zoom / pan */
+
+  setView(view) {
+    this.view = { zoom: clampZoom(view.zoom), ox: view.ox, oy: view.oy };
+    this.clampView();
+    this.base = null;
+    this.dirty = true;
+    this.zoomLabel();
+  },
+
+  zoomBy(factor, anchor) {
+    const next = clampZoom(this.view.zoom * factor);
+    if (next === this.view.zoom) return;
+    const v = zoomAt(this.view, next, anchor, this.centre());
+    this.setView(v);
+  },
+
+  resetView() {
+    this.setView({ zoom: 1, ox: 0, oy: 0 });
+  },
+
+  zoomLabel() {
+    const el = $('#zoom-level');
+    if (el) el.textContent = `${this.view.zoom.toFixed(1)}×`;
+    const reset = $('#zoom-reset');
+    if (reset) reset.disabled = this.view.zoom === 1 && this.view.ox === 0 && this.view.oy === 0;
+  },
+
+  onWheel(e) {
+    e.preventDefault();
+    const r = this.canvas.getBoundingClientRect();
+    const unit = e.deltaMode === 1 ? 0.03 : 0.0015;
+    const factor = Math.exp(-e.deltaY * unit);
+    this.zoomBy(factor, { x: e.clientX - r.left, y: e.clientY - r.top });
+  },
+
+  onPointerDown(e) {
+    if (e.button !== undefined && e.button !== 0) return;
+    try { this.canvas.setPointerCapture(e.pointerId); } catch { /* synthetic events */ }
+    this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (this.pointers.size === 1) {
+      this.drag = { x: e.clientX, y: e.clientY, ox: this.view.ox, oy: this.view.oy, moved: false };
+    } else if (this.pointers.size === 2) {
+      const [a, b] = [...this.pointers.values()];
+      this.pinch = {
+        dist: Math.hypot(a.x - b.x, a.y - b.y),
+        zoom: this.view.zoom,
+        mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
+      };
+      this.drag = null;
+    }
+  },
+
+  onPointerMove(e) {
+    if (!this.pointers.has(e.pointerId)) return;
+    this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (this.pointers.size >= 2) {
+      if (!this.pinch) return;
+      const [a, b] = [...this.pointers.values()];
+      const dist = Math.hypot(a.x - b.x, a.y - b.y);
+      const r = this.canvas.getBoundingClientRect();
+      const mid = { x: (a.x + b.x) / 2 - r.left, y: (a.y + b.y) / 2 - r.top };
+      const next = clampZoom(this.pinch.zoom * (dist / Math.max(1, this.pinch.dist)));
+      const v = zoomAt({ zoom: this.pinch.zoom, ox: this.view.ox, oy: this.view.oy }, next, mid, this.centre());
+      this.setView(v);
+      return;
+    }
+
+    if (!this.drag) return;
+    const dx = e.clientX - this.drag.x;
+    const dy = e.clientY - this.drag.y;
+    if (!this.drag.moved && Math.abs(dx) + Math.abs(dy) > 3) {
+      this.drag.moved = true;
+      this.canvas.classList.add('dragging');
+      $('#tooltip').classList.add('hidden');
+    }
+    if (this.drag.moved) {
+      this.view.ox = this.drag.ox + dx;
+      this.view.oy = this.drag.oy + dy;
+      this.clampView();
+    }
+  },
+
+  onPointerUp(e) {
+    this.pointers.delete(e.pointerId);
+    if (this.pointers.size < 2) this.pinch = null;
+    if (this.pointers.size === 0) {
+      this.drag = null;
+      this.canvas.classList.remove('dragging');
+    }
+  },
+
+  onHover(e) {
+    if (this.drag && this.drag.moved) return;
     const rect = this.canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
@@ -590,7 +750,6 @@ const map = {
         bestDist = d;
       }
     }
-    // prefer servers when overlapping
     const serverHit = this.hits.filter((h) => h.type === 'server').find((h) => Math.hypot(h.x - mx, h.y - my) < 24);
     if (serverHit) best = serverHit;
     this.hover = best;
@@ -611,6 +770,7 @@ const map = {
     tip.style.top = `${ty}px`;
   },
 };
+
 
 function countryName(code) {
   if (!code) return '';
@@ -866,7 +1026,7 @@ async function serverModal(existing) {
       </div>
       <div class="field"><label for="sv-ip">Locate by public IP (optional)</label>
         <div class="row"><input id="sv-ip" type="text" placeholder="e.g. 203.0.113.10" /><button class="ghost small" id="sv-locate" type="button">Look up</button></div>
-        <p class="hint" id="sv-locate-hint">or click the map below to place the pin</p>
+        <p class="hint" id="sv-locate-hint">or click the map below to place the pin — IP geolocation is only a hint and can be wrong</p>
       </div>
       ${miniMapHtml('sv-mini')}
       <div class="row" style="margin-top:12px">

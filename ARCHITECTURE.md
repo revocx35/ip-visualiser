@@ -58,6 +58,10 @@ Vanilla ES modules, one canvas, no bundler:
   Additive blending (`globalCompositeOperation = 'lighter'`) gives the glow.
 - 30–60 fps redraw from `requestAnimationFrame`; only brightness changes between frames, so
   there is no per-frame data fetching. Data refreshes every 10 s.
+- Zoom (1×–12×) and pan are a pure projection transform (`public/viewmath.js`, unit-tested):
+  the land/graticule base is re-rendered for the current zoom *and* pan into an offscreen
+  canvas and blitted 1:1, which keeps panning gap-free at 60 fps and keeps coastlines crisp at
+  any zoom. Viewport clamping keeps the map covering the canvas.
 - Time-window slider is logarithmic (2 min … 24 h, capped by retention); dragging refilters
   client-side instantly and debounces one server refetch.
 
@@ -85,8 +89,9 @@ See `README.md`. All endpoints are JSON; agent ingest is the only token-authenti
   and the app's own admin session still sits on top.
 - **Agents:** reach the hub over the LAN, or over a VPN when the hub is at home and the agent is
   not (this deployment uses a Hysteria2 tunnel whose TUN device lives in the agent's own network
-  namespace). The ingest endpoint rejects unknown tokens with 401 and never trusts a body it
-  cannot validate.
+  namespace). Ingest is therefore **not published**: both agents post to the hub's own address
+  (`http://192.0.2.54:8920`), and the public host does not forward `/api/ingest` at all. The
+  endpoint rejects unknown tokens with 401 and never trusts a body it cannot validate.
 - **Agent tokens:** 24 random bytes, stored sha256, returned once, rotatable per agent,
   revocable by deleting the agent. A leaked token can inject fake events for its own server
   and nothing else.

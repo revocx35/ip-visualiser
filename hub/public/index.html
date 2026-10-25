@@ -61,6 +61,13 @@
         </div>
       </div>
 
+      <div class="hud hud-zoom">
+        <button class="zoom-btn" id="zoom-in" type="button" title="Zoom in" aria-label="Zoom in">+</button>
+        <button class="zoom-btn" id="zoom-out" type="button" title="Zoom out" aria-label="Zoom out">&minus;</button>
+        <button class="zoom-btn" id="zoom-reset" type="button" title="Reset view" aria-label="Reset view">&#8634;</button>
+        <span class="zoom-level" id="zoom-level">1.0&times;</span>
+      </div>
+
       <div class="hud hud-controls">
         <div class="ctl-head">
           <span>time window</span>
@@ -72,6 +79,7 @@
           <span class="legend-bar"></span>
           <span class="legend-txt">bright = just now · dim = edge of window</span>
         </div>
+        <div class="map-hint">scroll to zoom · drag to pan · double-click to zoom in</div>
       </div>
 
       <div class="hud hud-hosts">
