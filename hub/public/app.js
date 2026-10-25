@@ -315,8 +315,13 @@ const map = {
     $('#zoom-reset').addEventListener('click', () => this.resetView());
     $('#sc-close').addEventListener('click', () => this.select(null));
 
+    // A wall display has nobody watching individual frames: on the view-only page the loop
+    // draws every third frame (~20 fps), which is indistinguishable for a fade measured in
+    // hours and cuts the CPU burned on a PVE node by ~3x.
+    let frame = 0;
     const loop = () => {
       requestAnimationFrame(loop);
+      if (VIEW_ONLY && frame++ % 3 !== 0) return;
       try {
         this.step();
         this.draw();
