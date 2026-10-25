@@ -11,6 +11,7 @@ services:
       TRUST_PROXY: "1"
       TZ: ${TZ:-Europe/Istanbul}
       # Optional: authentik login events (see README). Leave empty to disable.
+      AUTHENTIK_INSTANCES: ${AUTHENTIK_INSTANCES:-}
       AUTHENTIK_URL: ${AUTHENTIK_URL:-}
       AUTHENTIK_TOKEN: ${AUTHENTIK_TOKEN:-}
       AUTHENTIK_SERVER: ${AUTHENTIK_SERVER:-}
