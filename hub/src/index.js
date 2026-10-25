@@ -15,7 +15,7 @@ const PORT = Number(process.env.PORT || 8080);
 const DB_PATH = process.env.DB_PATH || '/data/ipvis.db';
 const TRUST_PROXY = process.env.TRUST_PROXY !== '0';
 const MAX_BODY = 4 * 1024 * 1024;
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 
 const log = {
   line(level, msg, extra) {
