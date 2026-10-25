@@ -69,6 +69,9 @@ Vanilla ES modules, one canvas, no bundler:
 - Time-window slider is logarithmic (2 min … 24 h, capped by retention); dragging refilters
   client-side instantly and debounces one server refetch.
 
+- Clicking a server marker selects it: a ring around the tile plus a card listing its agents and the
+  addresses that reached it in the last hour (`GET /api/servers/:id/connections`, refreshed with each poll).
+
 ## API surface
 
 See `README.md`. All endpoints are JSON; agent ingest is the only token-authenticated one.

@@ -56,6 +56,7 @@ POST /api/setup                first-run admin creation
 POST /api/login | /api/logout  session cookie (HttpOnly, SameSite=Lax)
 GET  /api/state?window=120     servers, agents, settings, connections, stats
 GET  /api/servers              list
+GET  /api/servers/:id/connections?minutes=60   addresses that reached one server, newest first
 POST /api/servers              {name, lat, lon, color?}
 PATCH|DELETE /api/servers/:id
 POST /api/servers/:id/agents   mint an agent + token (token returned once)

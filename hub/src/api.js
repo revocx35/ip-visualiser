@@ -218,6 +218,62 @@ export function buildApi({ db, throttle, log, geo }) {
     json(ctx.res, 200, { ok: true });
   });
 
+  // Addresses that reached one server during the last N minutes (default: one hour).
+  route('GET', /^\/api\/servers\/(\d+)\/connections$/, {}, async (ctx, id) => {
+    const server = db.prepare('SELECT id, name FROM servers WHERE id = ?').get(id);
+    if (!server) throw new HttpError(404, 'server not found');
+    const minutes = Math.round(clampNumber(ctx.url.searchParams.get('minutes') || 60, 'minutes', 1, 1440));
+    const limit = Math.round(clampNumber(ctx.url.searchParams.get('limit') || 120, 'limit', 1, 500));
+    const since = Math.floor(Date.now() / 1000) - minutes * 60;
+
+    const rows = db
+      .prepare(
+        `SELECT ip, MAX(ts_minute) AS last_ts, SUM(count) AS count
+           FROM buckets WHERE server_id = ? AND ts_minute >= ?
+          GROUP BY ip ORDER BY last_ts DESC LIMIT ?`,
+      )
+      .all(id, since, limit);
+
+    const hostRows = db
+      .prepare(
+        `SELECT ip, host, SUM(count) AS c
+           FROM buckets WHERE server_id = ? AND ts_minute >= ?
+          GROUP BY ip, host`,
+      )
+      .all(id, since);
+    const hostsByIp = new Map();
+    for (const h of hostRows) {
+      const list = hostsByIp.get(h.ip) || [];
+      list.push({ host: h.host, count: Number(h.c) });
+      hostsByIp.set(h.ip, list);
+    }
+
+    const items = rows.map((r) => {
+      const loc = geo.resolve(r.ip);
+      const hosts = (hostsByIp.get(r.ip) || []).sort((a, b) => b.count - a.count);
+      return {
+        ip: r.ip,
+        private: Boolean(loc.private),
+        city: loc.city || null,
+        region: loc.region || null,
+        country: loc.country || null,
+        countryCode: loc.countryCode || null,
+        isp: loc.isp || null,
+        lastTs: Number(r.last_ts),
+        count: Number(r.count),
+        host: hosts[0]?.host || null,
+      };
+    });
+
+    const total = Number(
+      db
+        .prepare('SELECT COUNT(DISTINCT ip) AS n FROM buckets WHERE server_id = ? AND ts_minute >= ?')
+        .get(id, since).n,
+    );
+
+    json(ctx.res, 200, { server: { id: Number(server.id), name: server.name }, minutes, total, items });
+  });
+
   route('GET', /^\/api\/servers$/, {}, async (ctx) => {
     const rows = db.prepare('SELECT * FROM servers ORDER BY id').all().map(serverRow);
     json(ctx.res, 200, { servers: rows });

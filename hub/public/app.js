@@ -225,6 +225,7 @@ function applyState(data) {
   state.lastFetch = Date.now();
   state.live = true;
   updateHud();
+  if (map.selectedId) map.loadConnections(map.selectedId);
   if (state.page === 'servers') renderServers();
   if (state.page === 'agents') renderAgents();
 }
@@ -557,6 +558,8 @@ const map = {
     const now = Math.floor(Date.now() / 1000);
     $('#sc-name').textContent = server.name;
     $('#sc-meta').innerHTML = `<span class="mono">${server.lat.toFixed(2)}, ${server.lon.toFixed(2)}</span> · ${esc(colorLabel(server))}`;
+    $('#sc-conns').innerHTML = '<li class="muted">loading…</li>';
+    $('#sc-count').textContent = '';
     $('#sc-agents').innerHTML = agents.length
       ? agents
           .map(
@@ -568,6 +571,20 @@ const map = {
           .join('')
       : '<li><span class="muted">no agent attached</span></li>';
     card.classList.remove('hidden');
+    this.loadConnections(server.id);
+  },
+
+  /** Addresses that reached the selected server during the last hour. */
+  async loadConnections(serverId) {
+    if (this.selectedId !== serverId) return;
+    try {
+      const data = await api(`/api/servers/${serverId}/connections?minutes=60&limit=120`);
+      if (this.selectedId !== serverId) return;
+      renderServerConnections(data);
+    } catch {
+      const list = $('#sc-conns');
+      if (list) list.innerHTML = '<li class="muted">could not load addresses</li>';
+    }
   },
 
   /* ---------------------------------------------------------------- painting */
@@ -835,6 +852,29 @@ function ipTip(c, server) {
     <div class="tt-row"><span>requests</span><b>${fmtCount(c.count)}</b></div>
     <div class="tt-row"><span>last seen</span><b>${fmtAgo(now - c.lastTs)}</b></div>
     ${hosts ? `<div class="tt-row" style="margin-top:4px"><span>hosts</span><span style="text-align:right">${hosts}</span></div>` : ''}`;
+}
+
+function renderServerConnections(data) {
+  const now = Math.floor(Date.now() / 1000);
+  const list = $('#sc-conns');
+  $('#sc-count').textContent = `${data.total} address${data.total === 1 ? '' : 'es'}`;
+  if (!data.items.length) {
+    list.innerHTML = '<li class="muted">nothing in the last hour</li>';
+    return;
+  }
+  list.innerHTML = data.items
+    .map((it) => {
+      const place = it.private
+        ? 'LAN'
+        : it.city
+          ? `${it.city}${it.countryCode ? `, ${it.countryCode}` : ''}`
+          : it.country || 'unknown location';
+      return `<li title="${esc(it.host || '')}">
+        <div class="sc-ip"><span class="mono">${esc(it.ip)}</span><span class="sc-n">×${fmtCount(it.count)}</span></div>
+        <div class="sc-sub"><span>${esc(place)}</span><span>${esc(fmtAgo(now - it.lastTs))}</span></div>
+      </li>`;
+    })
+    .join('');
 }
 
 function serverTip(server) {
