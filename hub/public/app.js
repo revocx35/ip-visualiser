@@ -1576,7 +1576,10 @@ async function boot() {
       await enterApp();
       $('#boot').classList.add('hidden');
     } catch (err) {
-      $('#boot').innerHTML = `<p class="boot-text">map unreachable: ${esc(err.message)}</p>`;
+      // A wall display has nobody to press reload: keep trying, e.g. when the hub's host
+      // boots after the screen does.
+      $('#boot').innerHTML = `<p class="boot-text">map unreachable: ${esc(err.message)} — retrying</p>`;
+      setTimeout(() => location.reload(), 15000);
     }
     return;
   }
