@@ -41,8 +41,12 @@ the last N hours?* One hub, many agents — one agent per Nginx Proxy Manager in
   distinct IPs × hosts × minutes, not requests.
 - **Retention:** prune timer every 60 s deletes buckets older than `retentionHours`
   (default 168 h). Changing the setting prunes immediately.
-- **Geo:** `geoip-lite` (offline MaxMind-derived dataset). Lookups are cached in the `geo`
-  table, including misses. Private ranges are classified and never drawn.
+- **Geo:** ip-api.com batch lookups (100 addresses per request, one request every 1.5 s,
+  30-day cache in the `geo` table, `isp` stored for the tooltip) with the bundled `geoip-lite`
+  dataset as the instant fallback while a batch is queued. `GEO_PROVIDER=offline` disables all
+  outbound lookups. Rows written before the online provider existed carry no `source` column
+  value, so an upgrade re-resolves them on first sight instead of keeping stale coordinates.
+  Private ranges are classified and never drawn, and never sent to the provider.
 - **Sessions:** random 32-byte token in an `HttpOnly; SameSite=Lax` cookie (plus `Secure`
   behind TLS), stored as sha256, 7-day sliding expiry, one row per session.
 
@@ -102,6 +106,8 @@ See `README.md`. All endpoints are JSON; agent ingest is the only token-authenti
 - **XSS:** the UI escapes every server-provided string; CSP is `default-src 'self'` with no
   inline scripts.
 - **Data sensitivity:** client IPs and hostnames are stored in a local SQLite file on the
-  owner's hardware; nothing is sent anywhere except from an agent to its own hub.
+  owner's hardware. The only outbound traffic is the geo batch (client IPs only, no hostnames,
+  no user agents) to ip-api.com, and it exists only when `GEO_PROVIDER=ip-api`; set it to
+  `offline` to keep everything on the box.
 - **Containers:** non-root user (`node`), `cap_drop: ALL`, `no-new-privileges`; the agent
   mounts NPM's data directory read-only.

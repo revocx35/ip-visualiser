@@ -72,8 +72,11 @@ POST /api/ingest               {agentVersion, events:[{t, ip, host, b}]} (agent 
 - The UI is normally put behind authentik forward auth (NPM advanced config). Two endpoints are
   deliberately exempt: `/api/health` (uptime monitors) and `/api/ingest` (agents authenticate with
   their own bearer token). Gating ingest breaks every agent with a 302.
-- Geolocation is local (`geoip-lite`, MaxMind-derived data shipped with the npm package);
-  no third-party lookup service is contacted and no client IP leaves the hub.
+- Geolocation comes from the online **ip-api.com** batch API (`GEO_PROVIDER=ip-api`, the default):
+  addresses are resolved in batches of 100 with the answers cached in SQLite for `GEO_TTL_DAYS`
+  (30 by default). The bundled offline database (`geoip-lite`) is the immediate fallback while a
+  batch is in flight, and `GEO_PROVIDER=offline` turns the network lookups off completely.
+  Note the trade-off: with the online provider the client IPs are sent to ip-api.com.
 - The map zooms (scroll, pinch, +/− buttons, double-click) and pans (drag), 1×–12×; the
   graticule densifies as you zoom in.
 - RFC1918/link-local/loopback addresses are counted and stored but not drawn — they have

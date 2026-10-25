@@ -47,6 +47,10 @@ function fmtAgo(seconds) {
   return `${Math.round(seconds / 86400)}d ago`;
 }
 
+function colorLabel(server) {
+  return String(server.color || state.settings.lineColor || '').toUpperCase();
+}
+
 function fmtCount(n) {
   if (n < 1000) return String(n);
   if (n < 1e6) return `${(n / 1000).toFixed(n < 10000 ? 1 : 0)}k`;
@@ -256,11 +260,15 @@ const map = {
   canvas: null,
   ctx: null,
   land: null,
-  base: null,
+  landPath: null,
   rect: { x0: 0, y0: 0, scale: 1 },
+  // view = what is on screen right now, target = where the eased animation is heading
   view: { zoom: 1, ox: 0, oy: 0 },
+  target: { zoom: 1, ox: 0, oy: 0 },
+  animating: false,
   hits: [],
   hover: null,
+  selectedId: null,
   width: 0,
   height: 0,
   dpr: 1,
@@ -284,20 +292,22 @@ const map = {
     this.canvas.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
     this.canvas.addEventListener('dblclick', (e) => {
       const r = this.canvas.getBoundingClientRect();
-      this.zoomBy(1.7, { x: e.clientX - r.left, y: e.clientY - r.top });
+      this.zoomTo(this.target.zoom * 1.7, { x: e.clientX - r.left, y: e.clientY - r.top });
     });
     this.canvas.addEventListener('pointerdown', (e) => this.onPointerDown(e));
     this.canvas.addEventListener('pointermove', (e) => this.onPointerMove(e));
     this.canvas.addEventListener('pointerup', (e) => this.onPointerUp(e));
     this.canvas.addEventListener('pointercancel', (e) => this.onPointerUp(e));
 
-    $('#zoom-in').addEventListener('click', () => this.zoomBy(1.6));
-    $('#zoom-out').addEventListener('click', () => this.zoomBy(1 / 1.6));
+    $('#zoom-in').addEventListener('click', () => this.zoomTo(this.target.zoom * 1.5));
+    $('#zoom-out').addEventListener('click', () => this.zoomTo(this.target.zoom / 1.5));
     $('#zoom-reset').addEventListener('click', () => this.resetView());
+    $('#sc-close').addEventListener('click', () => this.select(null));
 
     const loop = () => {
       requestAnimationFrame(loop);
       try {
+        this.step();
         this.draw();
       } catch (err) {
         console.warn('map draw failed', err);
@@ -310,8 +320,8 @@ const map = {
     try {
       const res = await fetch('/world.json');
       this.land = await res.json();
-      this.dirty = true;
-    } catch { /* map still works without land */ }
+      this.buildLandPath();
+    } catch { /* the map still works without land */ }
   },
 
   resize() {
@@ -329,53 +339,62 @@ const map = {
     const availW = Math.max(50, w - padX * 2);
     const availH = Math.max(50, h - padY * 2);
     const scale = Math.min(availW / 360, availH / 180);
-    this.rect = {
-      scale,
-      x0: (w - 360 * scale) / 2,
-      y0: (h - 180 * scale) / 2,
-    };
-    this.clampView();
-    this.base = null;
-    this.dirty = true;
+    this.rect = { scale, x0: (w - 360 * scale) / 2, y0: (h - 180 * scale) / 2 };
+    this.buildLandPath();
+    this.target = this.clampView({ ...this.view });
+    this.view = { ...this.target };
+    this.animating = false;
+  },
+
+  /** Land outline as a Path2D in base (zoom 1) coordinates; drawn under a transform. */
+  buildLandPath() {
+    if (!this.land || !this.land.features) return;
+    const { x0, y0, scale } = this.rect;
+    const path = new Path2D();
+    for (const f of this.land.features) {
+      const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates;
+      for (const poly of polys) {
+        for (const ring of poly) {
+          let prevLon = null;
+          for (const [lon, lat] of ring) {
+            const x = x0 + (lon + 180) * scale;
+            const y = y0 + (90 - lat) * scale;
+            // splitting at the antimeridian avoids a stripe across the whole map
+            if (prevLon === null || Math.abs(lon - prevLon) > 180) path.moveTo(x, y);
+            else path.lineTo(x, y);
+            prevLon = lon;
+          }
+        }
+      }
+    }
+    this.landPath = path;
   },
 
   centre() {
     return { x: this.width / 2, y: this.height / 2 };
   },
 
-  /** Projected map rectangle at the current zoom, before panning. */
-  bounds() {
+  /** Projected map rectangle at a given zoom, before panning. */
+  bounds(z) {
     const { x0, y0, scale } = this.rect;
     const c = this.centre();
-    const z = this.view.zoom;
     const left = c.x + (x0 - c.x) * z;
     const top = c.y + (y0 - c.y) * z;
     return { left, top, right: left + 360 * scale * z, bottom: top + 180 * scale * z };
   },
 
-  clampView() {
-    const { ox, oy } = clampPan(
-      this.bounds(),
-      { width: this.width, height: this.height },
-      this.view.ox,
-      this.view.oy,
-    );
-    this.view.ox = ox;
-    this.view.oy = oy;
+  clampView(v) {
+    const { ox, oy } = clampPan(this.bounds(v.zoom), { width: this.width, height: this.height }, v.ox, v.oy);
+    return { zoom: clampZoom(v.zoom), ox, oy };
   },
 
-  projectRaw(lon, lat) {
+  project(lon, lat) {
     const { x0, y0, scale } = this.rect;
     const c = this.centre();
     const z = this.view.zoom;
     const bx = x0 + (lon + 180) * scale;
     const by = y0 + (90 - lat) * scale;
-    return [c.x + (bx - c.x) * z, c.y + (by - c.y) * z];
-  },
-
-  project(lon, lat) {
-    const [x, y] = this.projectRaw(lon, lat);
-    return [x + this.view.ox, y + this.view.oy];
+    return [c.x + (bx - c.x) * z + this.view.ox, c.y + (by - c.y) * z + this.view.oy];
   },
 
   unproject(x, y) {
@@ -387,122 +406,254 @@ const map = {
     return { lon: (bx - x0) / scale - 180, lat: 90 - (by - y0) / scale };
   },
 
-  buildBase() {
-    // The base is drawn for the current zoom AND pan, then blitted 1:1, so panning never
-    // exposes an uncovered strip at the canvas edge.
-    const { width: w, height: h, dpr } = this;
-    const ox = this.view.ox;
-    const oy = this.view.oy;
-    const c = document.createElement('canvas');
-    c.width = Math.max(1, Math.round(w * dpr));
-    c.height = Math.max(1, Math.round(h * dpr));
-    const ctx = c.getContext('2d');
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  /* ------------------------------------------------------------ view control */
 
-    const z = this.view.zoom;
-    const raw = this.bounds();
-    const b = { left: raw.left + ox, top: raw.top + oy, right: raw.right + ox, bottom: raw.bottom + oy };
-    const pj = (lon, lat) => {
-      const [x, y] = this.projectRaw(lon, lat);
-      return [x + ox, y + oy];
-    };
-
-    // ocean plate
-    ctx.save();
-    ctx.fillStyle = 'rgba(11, 23, 38, 0.72)';
-    ctx.strokeStyle = 'rgba(96, 150, 200, 0.22)';
-    ctx.beginPath();
-    ctx.roundRect(b.left, b.top, b.right - b.left, b.bottom - b.top, Math.max(4, 10 * Math.min(z, 2)));
-    ctx.fill();
-    ctx.stroke();
-    ctx.restore();
-
-    // graticule — denser as you zoom in
-    const step = z < 1.6 ? 30 : z < 3.5 ? 15 : z < 7 ? 10 : 5;
-    ctx.save();
-    ctx.strokeStyle = 'rgba(96, 140, 190, 0.14)';
-    ctx.lineWidth = 1;
-    for (let lon = -180; lon <= 180; lon += step) {
-      const [x] = pj(lon, 0);
-      ctx.beginPath();
-      ctx.moveTo(x, b.top);
-      ctx.lineTo(x, b.bottom);
-      ctx.stroke();
+  step() {
+    if (!this.animating) return;
+    const v = this.view;
+    const t = this.target;
+    const dz = t.zoom - v.zoom;
+    const dx = t.ox - v.ox;
+    const dy = t.oy - v.oy;
+    if (Math.abs(dz) < 0.0015 && Math.abs(dx) < 0.4 && Math.abs(dy) < 0.4) {
+      this.view = { ...t };
+      this.animating = false;
+      return;
     }
-    for (let lat = -90; lat <= 90; lat += step) {
-      const [, y] = pj(0, lat);
-      if (y < b.top - 1 || y > b.bottom + 1) continue;
-      ctx.beginPath();
-      ctx.moveTo(b.left, y);
-      ctx.lineTo(b.right, y);
-      ctx.stroke();
-    }
-    ctx.strokeStyle = 'rgba(120, 170, 220, 0.24)';
-    const [, eqY] = pj(0, 0);
-    ctx.beginPath();
-    ctx.moveTo(b.left, eqY);
-    ctx.lineTo(b.right, eqY);
-    ctx.stroke();
-    ctx.restore();
+    v.zoom += dz * 0.24;
+    v.ox += dx * 0.24;
+    v.oy += dy * 0.24;
+  },
 
-    // land
-    if (this.land && this.land.features) {
-      ctx.save();
-      ctx.beginPath();
-      for (const f of this.land.features) {
-        const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates;
-        for (const poly of polys) {
-          for (const ring of poly) {
-            let prevLon = null;
-            for (const [lon, lat] of ring) {
-              const [px, py] = pj(lon, lat);
-              // A ring crossing the antimeridian would otherwise draw a stripe across the map.
-              if (prevLon === null || Math.abs(lon - prevLon) > 180) ctx.moveTo(px, py);
-              else ctx.lineTo(px, py);
-              prevLon = lon;
-            }
-          }
+  zoomTo(nextZoom, anchor) {
+    const z = clampZoom(nextZoom);
+    if (z === this.target.zoom) return;
+    const v = zoomAt(this.target, z, anchor, this.centre());
+    this.target = this.clampView({ zoom: v.zoom, ox: v.ox, oy: v.oy });
+    this.animating = true;
+    this.zoomLabel();
+  },
+
+  resetView() {
+    this.target = this.clampView({ zoom: 1, ox: 0, oy: 0 });
+    this.animating = true;
+    this.zoomLabel();
+  },
+
+  zoomLabel() {
+    const el = $('#zoom-level');
+    if (el) el.textContent = `${this.target.zoom.toFixed(1)}×`;
+    const reset = $('#zoom-reset');
+    if (reset) reset.disabled = this.target.zoom === 1 && this.target.ox === 0 && this.target.oy === 0;
+  },
+
+  onWheel(e) {
+    e.preventDefault();
+    const r = this.canvas.getBoundingClientRect();
+    const unit = e.deltaMode === 1 ? 0.03 : 0.0012;
+    // one wheel notch grows the zoom by a fixed ratio instead of jumping a whole level
+    this.zoomTo(this.target.zoom * Math.exp(-e.deltaY * unit), { x: e.clientX - r.left, y: e.clientY - r.top });
+  },
+
+  onPointerDown(e) {
+    if (e.button !== undefined && e.button !== 0) return;
+    try { this.canvas.setPointerCapture(e.pointerId); } catch { /* synthetic events */ }
+    this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (this.pointers.size === 1) {
+      this.drag = { x: e.clientX, y: e.clientY, ox: this.target.ox, oy: this.target.oy, moved: false, startedOn: this.hitAt(e) };
+    } else if (this.pointers.size === 2) {
+      const [a, b] = [...this.pointers.values()];
+      this.pinch = { dist: Math.hypot(a.x - b.x, a.y - b.y), zoom: this.target.zoom };
+      this.drag = null;
+    }
+  },
+
+  onPointerMove(e) {
+    if (!this.pointers.has(e.pointerId)) return;
+    this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (this.pointers.size >= 2) {
+      if (!this.pinch) return;
+      const [a, b] = [...this.pointers.values()];
+      const dist = Math.hypot(a.x - b.x, a.y - b.y);
+      const r = this.canvas.getBoundingClientRect();
+      const mid = { x: (a.x + b.x) / 2 - r.left, y: (a.y + b.y) / 2 - r.top };
+      const v = zoomAt(
+        { zoom: this.pinch.zoom, ox: this.view.ox, oy: this.view.oy },
+        clampZoom(this.pinch.zoom * (dist / Math.max(1, this.pinch.dist))),
+        mid,
+        this.centre(),
+      );
+      this.view = this.clampView(v);
+      this.target = { ...this.view };
+      this.animating = false;
+      this.zoomLabel();
+      return;
+    }
+
+    if (!this.drag) return;
+    const dx = e.clientX - this.drag.x;
+    const dy = e.clientY - this.drag.y;
+    if (!this.drag.moved && Math.abs(dx) + Math.abs(dy) > 4) {
+      this.drag.moved = true;
+      this.canvas.classList.add('dragging');
+      $('#tooltip').classList.add('hidden');
+    }
+    if (this.drag.moved) {
+      const v = this.clampView({ zoom: this.target.zoom, ox: this.drag.ox + dx, oy: this.drag.oy + dy });
+      this.target = v;
+      this.view = { ...v };
+      this.animating = false;
+    }
+  },
+
+  onPointerUp(e) {
+    const wasDrag = this.drag && this.drag.moved;
+    const startedOn = this.drag && this.drag.startedOn;
+    this.pointers.delete(e.pointerId);
+    if (this.pointers.size < 2) this.pinch = null;
+    if (this.pointers.size === 0) {
+      this.drag = null;
+      this.canvas.classList.remove('dragging');
+      // A click (no drag) selects a server marker instead of moving the map.
+      if (!wasDrag) {
+        if (startedOn && startedOn.type === 'server') {
+          this.select(this.selectedId === startedOn.data.id ? null : startedOn.data.id);
+        } else {
+          this.select(null);
         }
       }
-      const landGrad = ctx.createLinearGradient(0, b.top, 0, b.bottom);
-      landGrad.addColorStop(0, '#1d2f42');
-      landGrad.addColorStop(0.45, '#182a3c');
-      landGrad.addColorStop(1, '#1b2c3e');
-      ctx.fillStyle = landGrad;
-      ctx.fill('evenodd');
-      ctx.strokeStyle = 'rgba(126, 178, 228, 0.42)';
-      ctx.lineWidth = 0.8;
-      ctx.stroke();
-      ctx.restore();
     }
-
-    // frame
-    ctx.strokeStyle = 'rgba(96, 140, 190, 0.18)';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(b.left + 0.5, b.top + 0.5, b.right - b.left - 1, b.bottom - b.top - 1);
-    return c;
   },
+
+  hitAt(e) {
+    const r = this.canvas.getBoundingClientRect();
+    const mx = e.clientX - r.left;
+    const my = e.clientY - r.top;
+    const servers = this.hits.filter((h) => h.type === 'server' && Math.hypot(h.x - mx, h.y - my) < 26);
+    if (servers.length) return servers[0];
+    let best = null;
+    let bestDist = 14;
+    for (const h of this.hits) {
+      const d = Math.hypot(h.x - mx, h.y - my);
+      if (d < bestDist) {
+        best = h;
+        bestDist = d;
+      }
+    }
+    return best;
+  },
+
+  select(serverId) {
+    this.selectedId = serverId;
+    const card = $('#server-card');
+    if (!card) return;
+    const server = state.servers.find((s) => s.id === serverId);
+    if (!server) {
+      card.classList.add('hidden');
+      return;
+    }
+    const agents = state.agents.filter((a) => a.serverId === server.id);
+    const now = Math.floor(Date.now() / 1000);
+    $('#sc-name').textContent = server.name;
+    $('#sc-meta').innerHTML = `<span class="mono">${server.lat.toFixed(2)}, ${server.lon.toFixed(2)}</span> · ${esc(colorLabel(server))}`;
+    $('#sc-agents').innerHTML = agents.length
+      ? agents
+          .map(
+            (a) =>
+              `<li><span>${esc(a.name)}</span><span class="${a.lastSeen && now - a.lastSeen < 120 ? 'ok' : ''}">${
+                a.lastSeen ? esc(fmtAgo(now - a.lastSeen)) : 'never'
+              }</span></li>`,
+          )
+          .join('')
+      : '<li><span class="muted">no agent attached</span></li>';
+    card.classList.remove('hidden');
+  },
+
+  /* ---------------------------------------------------------------- painting */
 
   draw() {
     if (!this.ctx || this.width < 2 || this.height < 2) return;
     const ctx = this.ctx;
-    if (!this.base || !this.base.width || this.dirty) {
-      this.base = this.buildBase();
-      this.dirty = false;
-    }
-    if (!this.base || !this.base.width) return;
-
+    const { zoom: z, ox, oy } = this.view;
     const c = this.centre();
+    const base = this.rect;
+
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.clearRect(0, 0, this.width, this.height);
 
-    // backdrop glow stays in screen space so it does not travel while panning
     const glow = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, Math.max(this.width, this.height) * 0.62);
     glow.addColorStop(0, 'rgba(20, 44, 74, 0.5)');
     glow.addColorStop(1, 'rgba(8, 15, 26, 0)');
     ctx.fillStyle = glow;
     ctx.fillRect(0, 0, this.width, this.height);
 
-    ctx.drawImage(this.base, 0, 0, this.width, this.height);
+    // ocean: a plate when the whole world is visible, a full bleed once zoomed in
+    const mapW = 360 * base.scale * z;
+    const mapH = 180 * base.scale * z;
+    const left = c.x + (base.x0 - c.x) * z + ox;
+    const top = c.y + (base.y0 - c.y) * z + oy;
+    ctx.save();
+    ctx.fillStyle = 'rgba(11, 23, 38, 0.72)';
+    ctx.strokeStyle = 'rgba(96, 150, 200, 0.22)';
+    if (mapW < this.width + 1 || mapH < this.height + 1) {
+      ctx.beginPath();
+      ctx.roundRect(left, top, mapW, mapH, Math.max(4, 10 * Math.min(z, 2)));
+      ctx.fill();
+      ctx.stroke();
+    } else {
+      ctx.fillRect(0, 0, this.width, this.height);
+    }
+    ctx.restore();
+
+    // graticule + land, drawn as vectors under the view transform
+    ctx.save();
+    ctx.setTransform(
+      this.dpr * z,
+      0,
+      0,
+      this.dpr * z,
+      this.dpr * (c.x * (1 - z) + ox),
+      this.dpr * (c.y * (1 - z) + oy),
+    );
+    const step = z < 1.6 ? 30 : z < 3.5 ? 15 : z < 7 ? 10 : 5;
+    ctx.strokeStyle = 'rgba(96, 140, 190, 0.16)';
+    ctx.lineWidth = 1 / z;
+    ctx.beginPath();
+    for (let lon = -180; lon <= 180; lon += step) {
+      const x = base.x0 + (lon + 180) * base.scale;
+      ctx.moveTo(x, base.y0);
+      ctx.lineTo(x, base.y0 + 180 * base.scale);
+    }
+    for (let lat = -90; lat <= 90; lat += step) {
+      const y = base.y0 + (90 - lat) * base.scale;
+      ctx.moveTo(base.x0, y);
+      ctx.lineTo(base.x0 + 360 * base.scale, y);
+    }
+    ctx.stroke();
+
+    ctx.strokeStyle = 'rgba(120, 170, 220, 0.26)';
+    ctx.beginPath();
+    const eqY = base.y0 + 90 * base.scale;
+    ctx.moveTo(base.x0, eqY);
+    ctx.lineTo(base.x0 + 360 * base.scale, eqY);
+    ctx.stroke();
+
+    if (this.landPath) {
+      const g = ctx.createLinearGradient(0, base.y0, 0, base.y0 + 180 * base.scale);
+      g.addColorStop(0, '#1d2f42');
+      g.addColorStop(0.45, '#182a3c');
+      g.addColorStop(1, '#1b2c3e');
+      ctx.fillStyle = g;
+      ctx.fill(this.landPath, 'evenodd');
+      ctx.strokeStyle = 'rgba(126, 178, 228, 0.42)';
+      ctx.lineWidth = 0.85 / z;
+      ctx.stroke(this.landPath);
+    }
+    ctx.restore();
+
+    // everything below is in screen space
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
 
     const now = Math.floor(Date.now() / 1000);
     const windowSec = Math.max(60, state.windowMinutes * 60);
@@ -510,41 +661,34 @@ const map = {
     const defaultColor = state.settings.lineColor || '#35e0ff';
     this.hits = [];
 
-    const drawn = state.connections
-      .filter((c) => c.lastTs >= now - windowSec)
-      .slice(0, 1200);
+    const drawn = state.connections.filter((cn) => cn.lastTs >= now - windowSec).slice(0, 1200);
 
-    // ---- lines
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    for (const c of drawn) {
-      const server = servers.get(c.serverId);
+    for (const cn of drawn) {
+      const server = servers.get(cn.serverId);
       if (!server) continue;
-      const age = Math.max(0, now - c.lastTs);
+      const age = Math.max(0, now - cn.lastTs);
       const frac = Math.max(0, 1 - age / windowSec);
       const alpha = 0.05 + 0.95 * Math.pow(frac, 1.7);
       const color = server.color || defaultColor;
-      const [sx, sy] = this.project(c.lon, c.lat);
+      const [sx, sy] = this.project(cn.lon, cn.lat);
       const [tx, ty] = this.project(server.lon, server.lat);
-      if (Math.abs(c.lon - server.lon) > 180) continue;
+      if (Math.abs(cn.lon - server.lon) > 180) continue;
 
       const dist = Math.hypot(tx - sx, ty - sy);
-      const cx = (sx + tx) / 2;
-      const cy = (sy + ty) / 2 - dist * 0.16;
-
       ctx.beginPath();
       ctx.moveTo(sx, sy);
-      ctx.quadraticCurveTo(cx, cy, tx, ty);
+      ctx.quadraticCurveTo((sx + tx) / 2, (sy + ty) / 2 - dist * 0.16, tx, ty);
       ctx.strokeStyle = rgba(color, alpha);
-      ctx.lineWidth = 0.5 + 1.7 * Math.pow(frac, 1.4) + Math.min(2, Math.log10(1 + c.count) * 0.55);
+      ctx.lineWidth = 0.5 + 1.7 * Math.pow(frac, 1.4) + Math.min(2, Math.log10(1 + cn.count) * 0.55);
       ctx.lineCap = 'round';
       ctx.stroke();
 
-      this.hits.push({ type: 'ip', x: sx, y: sy, data: c, server, alpha });
+      this.hits.push({ type: 'ip', x: sx, y: sy, data: cn, server, alpha });
     }
     ctx.restore();
 
-    // ---- ip dots
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     for (const hit of this.hits) {
@@ -565,20 +709,18 @@ const map = {
     }
     ctx.restore();
 
-    // ---- servers
-    let pulse = 0;
+    let pulse = (Date.now() % 2400) / 2400;
     for (const server of state.servers) {
       const [x, y] = this.project(server.lon, server.lat);
-      const recent = drawn.some((c) => c.serverId === server.id);
-      pulse = (Date.now() % 2400) / 2400;
-      this.drawServer(ctx, x, y, server, defaultColor, recent, pulse);
+      const recent = drawn.some((cn) => cn.serverId === server.id);
+      this.drawServer(ctx, x, y, server, defaultColor, recent, pulse, this.selectedId === server.id);
       this.hits.push({ type: 'server', x, y, data: server });
     }
 
-    // ---- hover ring
     if (this.hover) {
       ctx.save();
-      ctx.strokeStyle = this.hover.type === 'server' ? 'rgba(255,255,255,0.55)' : rgba(this.hover.server?.color || defaultColor, 0.8);
+      ctx.strokeStyle =
+        this.hover.type === 'server' ? 'rgba(255,255,255,0.55)' : rgba(this.hover.server?.color || defaultColor, 0.8);
       ctx.lineWidth = 1.2;
       ctx.beginPath();
       ctx.arc(this.hover.x, this.hover.y, this.hover.type === 'server' ? 22 : 9, 0, Math.PI * 2);
@@ -587,10 +729,17 @@ const map = {
     }
   },
 
-  drawServer(ctx, x, y, server, defaultColor, recent, pulse) {
+  drawServer(ctx, x, y, server, defaultColor, recent, pulse, selected) {
     const color = server.color || defaultColor;
     const size = 24;
     ctx.save();
+    if (selected) {
+      ctx.strokeStyle = rgba(color, 0.9);
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(x, y, 26, 0, Math.PI * 2);
+      ctx.stroke();
+    }
     if (recent) {
       const g = ctx.createRadialGradient(x, y, 0, x, y, 30);
       g.addColorStop(0, rgba(color, 0.26 * (1 - pulse)));
@@ -618,9 +767,8 @@ const map = {
 
     ctx.fillStyle = rgba(color, 0.95);
     for (let i = 0; i < 2; i += 1) {
-      const ry = y0 + 6 + i * 8;
       ctx.beginPath();
-      ctx.roundRect(x0 + 6, ry, size - 12, 5, 1.6);
+      ctx.roundRect(x0 + 6, y0 + 6 + i * 8, size - 12, 5, 1.6);
       ctx.fill();
     }
     ctx.fillStyle = recent ? '#eafcff' : rgba(color, 0.4);
@@ -631,108 +779,14 @@ const map = {
     ctx.font = '600 11.5px ui-sans-serif, system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
-    const label = server.name;
-    const tw = ctx.measureText(label).width;
+    const tw = ctx.measureText(server.name).width;
     ctx.fillStyle = 'rgba(6, 11, 18, 0.78)';
     ctx.beginPath();
     ctx.roundRect(x - tw / 2 - 7, y + size / 2 + 4, tw + 14, 18, 6);
     ctx.fill();
     ctx.fillStyle = 'rgba(226, 240, 252, 0.92)';
-    ctx.fillText(label, x, y + size / 2 + 7);
+    ctx.fillText(server.name, x, y + size / 2 + 7);
     ctx.restore();
-  },
-
-  /* ------------------------------------------------------------ zoom / pan */
-
-  setView(view) {
-    this.view = { zoom: clampZoom(view.zoom), ox: view.ox, oy: view.oy };
-    this.clampView();
-    this.base = null;
-    this.dirty = true;
-    this.zoomLabel();
-  },
-
-  zoomBy(factor, anchor) {
-    const next = clampZoom(this.view.zoom * factor);
-    if (next === this.view.zoom) return;
-    const v = zoomAt(this.view, next, anchor, this.centre());
-    this.setView(v);
-  },
-
-  resetView() {
-    this.setView({ zoom: 1, ox: 0, oy: 0 });
-  },
-
-  zoomLabel() {
-    const el = $('#zoom-level');
-    if (el) el.textContent = `${this.view.zoom.toFixed(1)}×`;
-    const reset = $('#zoom-reset');
-    if (reset) reset.disabled = this.view.zoom === 1 && this.view.ox === 0 && this.view.oy === 0;
-  },
-
-  onWheel(e) {
-    e.preventDefault();
-    const r = this.canvas.getBoundingClientRect();
-    const unit = e.deltaMode === 1 ? 0.03 : 0.0015;
-    const factor = Math.exp(-e.deltaY * unit);
-    this.zoomBy(factor, { x: e.clientX - r.left, y: e.clientY - r.top });
-  },
-
-  onPointerDown(e) {
-    if (e.button !== undefined && e.button !== 0) return;
-    try { this.canvas.setPointerCapture(e.pointerId); } catch { /* synthetic events */ }
-    this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (this.pointers.size === 1) {
-      this.drag = { x: e.clientX, y: e.clientY, ox: this.view.ox, oy: this.view.oy, moved: false };
-    } else if (this.pointers.size === 2) {
-      const [a, b] = [...this.pointers.values()];
-      this.pinch = {
-        dist: Math.hypot(a.x - b.x, a.y - b.y),
-        zoom: this.view.zoom,
-        mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
-      };
-      this.drag = null;
-    }
-  },
-
-  onPointerMove(e) {
-    if (!this.pointers.has(e.pointerId)) return;
-    this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-
-    if (this.pointers.size >= 2) {
-      if (!this.pinch) return;
-      const [a, b] = [...this.pointers.values()];
-      const dist = Math.hypot(a.x - b.x, a.y - b.y);
-      const r = this.canvas.getBoundingClientRect();
-      const mid = { x: (a.x + b.x) / 2 - r.left, y: (a.y + b.y) / 2 - r.top };
-      const next = clampZoom(this.pinch.zoom * (dist / Math.max(1, this.pinch.dist)));
-      const v = zoomAt({ zoom: this.pinch.zoom, ox: this.view.ox, oy: this.view.oy }, next, mid, this.centre());
-      this.setView(v);
-      return;
-    }
-
-    if (!this.drag) return;
-    const dx = e.clientX - this.drag.x;
-    const dy = e.clientY - this.drag.y;
-    if (!this.drag.moved && Math.abs(dx) + Math.abs(dy) > 3) {
-      this.drag.moved = true;
-      this.canvas.classList.add('dragging');
-      $('#tooltip').classList.add('hidden');
-    }
-    if (this.drag.moved) {
-      this.view.ox = this.drag.ox + dx;
-      this.view.oy = this.drag.oy + dy;
-      this.clampView();
-    }
-  },
-
-  onPointerUp(e) {
-    this.pointers.delete(e.pointerId);
-    if (this.pointers.size < 2) this.pinch = null;
-    if (this.pointers.size === 0) {
-      this.drag = null;
-      this.canvas.classList.remove('dragging');
-    }
   },
 
   onHover(e) {
@@ -740,18 +794,7 @@ const map = {
     const rect = this.canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
-    let best = null;
-    let bestDist = 16;
-    for (const hit of this.hits) {
-      const d = Math.hypot(hit.x - mx, hit.y - my);
-      const limit = hit.type === 'server' ? 22 : 12;
-      if (d < limit && d < bestDist) {
-        best = hit;
-        bestDist = d;
-      }
-    }
-    const serverHit = this.hits.filter((h) => h.type === 'server').find((h) => Math.hypot(h.x - mx, h.y - my) < 24);
-    if (serverHit) best = serverHit;
+    const best = this.hitAt(e);
     this.hover = best;
     const tip = $('#tooltip');
     if (!best) {
@@ -787,6 +830,7 @@ function ipTip(c, server) {
   const hosts = (c.hosts || []).map((h) => `${esc(h.host)} <b>${fmtCount(h.count)}</b>`).join('<br>');
   return `<div class="tt-title mono">${esc(c.ip)}</div>
     <div class="tt-row"><span>place</span><b>${esc(place)}</b></div>
+    ${c.isp ? `<div class="tt-row"><span>network</span><b>${esc(c.isp)}</b></div>` : ''}
     <div class="tt-row"><span>server</span><b>${esc(server.name)}</b></div>
     <div class="tt-row"><span>requests</span><b>${fmtCount(c.count)}</b></div>
     <div class="tt-row"><span>last seen</span><b>${fmtAgo(now - c.lastTs)}</b></div>

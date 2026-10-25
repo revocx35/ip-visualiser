@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { LoginThrottle, sessionUser } from './auth.js';
 import { getSettings, openDb, prune } from './db.js';
 import { buildApi, HttpError } from './api.js';
-import { normalizeIp } from './geo.js';
+import { createGeoResolver, normalizeIp } from './geo.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -15,7 +15,7 @@ const PORT = Number(process.env.PORT || 8080);
 const DB_PATH = process.env.DB_PATH || '/data/ipvis.db';
 const TRUST_PROXY = process.env.TRUST_PROXY !== '0';
 const MAX_BODY = 4 * 1024 * 1024;
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 
 const log = {
   line(level, msg, extra) {
@@ -35,7 +35,13 @@ const log = {
 
 const db = openDb(DB_PATH);
 const throttle = new LoginThrottle();
-const handleApi = buildApi({ db, throttle, log });
+const geo = createGeoResolver(db, {
+  provider: process.env.GEO_PROVIDER || 'ip-api',
+  ttlDays: Number(process.env.GEO_TTL_DAYS || 30),
+  log,
+});
+geo.start();
+const handleApi = buildApi({ db, throttle, log, geo });
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -227,6 +233,7 @@ pruneTimer.unref?.();
 
 function shutdown(signal) {
   log.info('shutting down', { signal });
+  geo.stop();
   server.close(() => {
     try {
       db.close();

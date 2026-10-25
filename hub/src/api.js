@@ -1,6 +1,6 @@
 import { createSession, destroySession, hashPassword, hashToken, randomToken, verifyPassword } from './auth.js';
 import { getSettings, setSetting, prune } from './db.js';
-import { geoLookupPublic, normalizeIp, resolveIp } from './geo.js';
+import { normalizeIp } from './geo.js';
 import { ingestBatch, touchAgent } from './ingest.js';
 
 const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
@@ -52,7 +52,7 @@ function agentRow(row) {
   };
 }
 
-export function buildApi({ db, throttle, log }) {
+export function buildApi({ db, throttle, log, geo }) {
   const handlers = [];
   const route = (method, pattern, opts, handler) => handlers.push({ method, pattern, ...opts, handler });
 
@@ -60,7 +60,7 @@ export function buildApi({ db, throttle, log }) {
   const pub = (method, pattern, handler) => publicRoutes.push({ method, pattern, handler });
 
   // ---- public -----------------------------------------------------------
-  pub('GET', /^\/api\/health$/, async (ctx) => json(ctx.res, 200, { ok: true, version: '1.1.0' }));
+  pub('GET', /^\/api\/health$/, async (ctx) => json(ctx.res, 200, { ok: true, version: '1.2.0', geo: geo.stats() }));
 
   pub('GET', /^\/api\/bootstrap$/, async (ctx) => {
     const users = Number(db.prepare('SELECT COUNT(*) AS n FROM users').get().n);
@@ -160,18 +160,19 @@ export function buildApi({ db, throttle, log }) {
     const geoCache = new Map();
     for (const row of grouped) {
       const ip = row.ip;
-      if (!geoCache.has(ip)) geoCache.set(ip, resolveIp(db, ip));
-      const geo = geoCache.get(ip);
-      if (geo.private || geo.lat === null || geo.lon === null) continue;
+      if (!geoCache.has(ip)) geoCache.set(ip, geo.resolve(ip));
+      const geoInfo = geoCache.get(ip);
+      if (geoInfo.private || geoInfo.lat === null || geoInfo.lon === null) continue;
       const hosts = (byKey.get(`${row.server_id}|${ip}`) || []).sort((a, b) => b.count - a.count);
       connections.push({
         serverId: Number(row.server_id),
         ip,
-        lat: geo.lat,
-        lon: geo.lon,
-        city: geo.city,
-        region: geo.region,
-        country: geo.country,
+        lat: geoInfo.lat,
+        lon: geoInfo.lon,
+        city: geoInfo.city,
+        region: geoInfo.region,
+        country: geoInfo.country,
+        isp: geoInfo.isp || null,
         lastTs: Number(row.last_ts),
         count: Number(row.count),
         hosts: hosts.slice(0, 4),
@@ -309,7 +310,7 @@ export function buildApi({ db, throttle, log }) {
   route('GET', /^\/api\/geo$/, {}, async (ctx) => {
     const ip = normalizeIp(ctx.url.searchParams.get('ip') || '');
     if (!ip) throw new HttpError(400, 'ip is required');
-    json(ctx.res, 200, geoLookupPublic(ip));
+    json(ctx.res, 200, geo.lookupPublic(ip));
   });
 
   route('GET', /^\/api\/settings$/, {}, async (ctx) => json(ctx.res, 200, { settings: getSettings(db) }));

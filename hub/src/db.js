@@ -60,6 +60,8 @@ CREATE TABLE IF NOT EXISTS geo (
   region TEXT,
   country TEXT,
   country_code TEXT,
+  isp TEXT,
+  source TEXT,
   looked_up_at INTEGER NOT NULL
 );
 
@@ -84,6 +86,10 @@ export function openDb(file) {
   db.exec('PRAGMA busy_timeout = 5000');
   db.exec('PRAGMA foreign_keys = ON');
   db.exec(SCHEMA);
+  // Older databases predate the online provider: add the columns it needs.
+  const geoCols = new Set(db.prepare('PRAGMA table_info(geo)').all().map((c) => c.name));
+  if (!geoCols.has('isp')) db.exec('ALTER TABLE geo ADD COLUMN isp TEXT');
+  if (!geoCols.has('source')) db.exec('ALTER TABLE geo ADD COLUMN source TEXT');
   for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) {
     db.prepare('INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)').run(k, JSON.stringify(v));
   }
