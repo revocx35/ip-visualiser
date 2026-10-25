@@ -10,6 +10,13 @@ services:
       # Set to 0 when the hub is exposed directly instead of behind a reverse proxy.
       TRUST_PROXY: "1"
       TZ: ${TZ:-Europe/Istanbul}
+      # Optional: authentik login events (see README). Leave empty to disable.
+      AUTHENTIK_URL: ${AUTHENTIK_URL:-}
+      AUTHENTIK_TOKEN: ${AUTHENTIK_TOKEN:-}
+      AUTHENTIK_SERVER: ${AUTHENTIK_SERVER:-}
+      AUTHENTIK_HOST: ${AUTHENTIK_HOST:-}
+      AUTHENTIK_BACKFILL_HOURS: ${AUTHENTIK_BACKFILL_HOURS:-168}
+      AUTHENTIK_POLL_MS: ${AUTHENTIK_POLL_MS:-30000}
     ports:
       - "${HUB_BIND:-0.0.0.0}:${HUB_PORT:-8920}:8080"
     volumes:

@@ -7,6 +7,7 @@ import { LoginThrottle, sessionUser } from './auth.js';
 import { getSettings, openDb, prune } from './db.js';
 import { buildApi, HttpError } from './api.js';
 import { createGeoResolver, normalizeIp } from './geo.js';
+import { createAuthentikPoller } from './authentik.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -41,7 +42,34 @@ const geo = createGeoResolver(db, {
   log,
 });
 geo.start();
-const handleApi = buildApi({ db, throttle, log, geo });
+
+// Optional: pull authentik login events (AUTHENTIK_URL + AUTHENTIK_TOKEN).
+let authentik = null;
+if (process.env.AUTHENTIK_URL && process.env.AUTHENTIK_TOKEN) {
+  const wanted = (process.env.AUTHENTIK_SERVER || '').trim();
+  let serverRow = null;
+  if (wanted) {
+    serverRow = /^\d+$/.test(wanted)
+      ? db.prepare('SELECT id, name FROM servers WHERE id = ?').get(Number(wanted))
+      : db.prepare('SELECT id, name FROM servers WHERE name = ?').get(wanted);
+    if (!serverRow) log.warn('AUTHENTIK_SERVER does not match a server, events will be unattributed', { wanted });
+  }
+  authentik = createAuthentikPoller({
+    db,
+    log,
+    baseUrl: process.env.AUTHENTIK_URL,
+    token: process.env.AUTHENTIK_TOKEN,
+    serverId: serverRow ? Number(serverRow.id) : null,
+    insecure: process.env.AUTHENTIK_INSECURE !== '0',
+    intervalMs: Number(process.env.AUTHENTIK_POLL_MS || 30000),
+    backfillHours: Number(process.env.AUTHENTIK_BACKFILL_HOURS || 24),
+    ownHost: process.env.AUTHENTIK_HOST || null,
+  });
+  authentik.start();
+  log.info('authentik polling enabled', { url: process.env.AUTHENTIK_URL, server: serverRow ? serverRow.name : null });
+}
+
+const handleApi = buildApi({ db, throttle, log, geo, authentik });
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -234,6 +262,7 @@ pruneTimer.unref?.();
 function shutdown(signal) {
   log.info('shutting down', { signal });
   geo.stop();
+  if (authentik) authentik.stop();
   server.close(() => {
     try {
       db.close();

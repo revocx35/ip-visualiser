@@ -52,7 +52,7 @@ function agentRow(row) {
   };
 }
 
-export function buildApi({ db, throttle, log, geo }) {
+export function buildApi({ db, throttle, log, geo, authentik = null }) {
   const handlers = [];
   const route = (method, pattern, opts, handler) => handlers.push({ method, pattern, ...opts, handler });
 
@@ -60,11 +60,11 @@ export function buildApi({ db, throttle, log, geo }) {
   const pub = (method, pattern, handler) => publicRoutes.push({ method, pattern, handler });
 
   // ---- public -----------------------------------------------------------
-  pub('GET', /^\/api\/health$/, async (ctx) => json(ctx.res, 200, { ok: true, version: '1.3.0', geo: geo.stats() }));
+  pub('GET', /^\/api\/health$/, async (ctx) => json(ctx.res, 200, { ok: true, version: '1.4.0', geo: geo.stats(), ...(authentik ? { authentik: authentik.stats() } : {}) }));
 
   pub('GET', /^\/api\/bootstrap$/, async (ctx) => {
     const users = Number(db.prepare('SELECT COUNT(*) AS n FROM users').get().n);
-    json(ctx.res, 200, { setupRequired: users === 0, app: 'ip-visualiser', version: '1.3.0' });
+    json(ctx.res, 200, { setupRequired: users === 0, app: 'ip-visualiser', version: '1.4.0' });
   });
 
   pub('POST', /^\/api\/setup$/, async (ctx) => {
@@ -191,6 +191,43 @@ export function buildApi({ db, throttle, log, geo }) {
       .all(since)
       .map((r) => ({ host: r.host, count: Number(r.c) }));
 
+    let auth = null;
+    if (authentik) {
+      const counts = db
+        .prepare("SELECT action, COUNT(*) AS n FROM auth_events WHERE ts >= ? GROUP BY action")
+        .all(since);
+      const authSummary = { failed: 0, success: 0, ips: [] };
+      for (const row of counts) {
+        if (row.action === 'login_failed') authSummary.failed = Number(row.n);
+        if (row.action === 'login') authSummary.success = Number(row.n);
+      }
+      const failedRows = db
+        .prepare(
+          `SELECT client_ip AS ip, COUNT(*) AS n, MAX(ts) AS last_ts,
+                  GROUP_CONCAT(DISTINCT username) AS users
+             FROM auth_events
+            WHERE action = 'login_failed' AND ts >= ? AND client_ip IS NOT NULL
+            GROUP BY client_ip ORDER BY last_ts DESC LIMIT 200`,
+        )
+        .all(since);
+      for (const row of failedRows) {
+        const loc = geo.resolve(row.ip);
+        if (loc.private || loc.lat === null || loc.lon === null) continue;
+        authSummary.ips.push({
+          ip: row.ip,
+          lat: loc.lat,
+          lon: loc.lon,
+          city: loc.city,
+          country: loc.country,
+          countryCode: loc.countryCode,
+          count: Number(row.n),
+          lastTs: Number(row.last_ts),
+          users: row.users ? String(row.users).split(',').slice(0, 4) : [],
+        });
+      }
+      auth = authSummary;
+    }
+
     json(ctx.res, 200, {
       serverTime: Math.floor(Date.now() / 1000),
       windowMinutes: windowMin,
@@ -198,6 +235,7 @@ export function buildApi({ db, throttle, log, geo }) {
       servers,
       agents,
       connections,
+      auth,
       stats: {
         events: Number(totals.c || 0),
         distinctIpHosts: Number(totals.n || 0),
@@ -216,6 +254,62 @@ export function buildApi({ db, throttle, log, geo }) {
     db.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?').run(ctx.user.id, ctx.user.tokenHash);
     log.info('password changed', { user: ctx.user.username });
     json(ctx.res, 200, { ok: true });
+  });
+
+  // authentik login attempts (successful and failed) for the last N minutes.
+  route('GET', /^\/api\/auth-events$/, {}, async (ctx) => {
+    if (!authentik) throw new HttpError(404, 'authentik integration is not configured');
+    const minutes = Math.round(clampNumber(ctx.url.searchParams.get('minutes') || 60, 'minutes', 1, 1440));
+    const limit = Math.round(clampNumber(ctx.url.searchParams.get('limit') || 80, 'limit', 1, 300));
+    const serverParam = ctx.url.searchParams.get('serverId');
+    const since = Math.floor(Date.now() / 1000) - minutes * 60;
+
+    const where = ['ts >= ?'];
+    const params = [since];
+    if (serverParam) {
+      where.push('server_id = ?');
+      params.push(Number(serverParam));
+    }
+    const rows = db
+      .prepare(
+        `SELECT pk, server_id, ts, action, username, client_ip, app FROM auth_events
+          WHERE ${where.join(' AND ')} ORDER BY ts DESC LIMIT ?`,
+      )
+      .all(...params, limit);
+
+    const totals = db
+      .prepare(
+        `SELECT action, COUNT(*) AS n FROM auth_events WHERE ${where.join(' AND ')} GROUP BY action`,
+      )
+      .all(...params);
+    const summary = { failed: 0, success: 0, distinctIps: 0 };
+    for (const t of totals) {
+      if (t.action === 'login_failed') summary.failed = Number(t.n);
+      if (t.action === 'login') summary.success = Number(t.n);
+    }
+    summary.distinctIps = Number(
+      db
+        .prepare(`SELECT COUNT(DISTINCT client_ip) AS n FROM auth_events WHERE ${where.join(' AND ')} AND client_ip IS NOT NULL`)
+        .get(...params).n,
+    );
+
+    const items = rows.map((r) => {
+      const loc = r.client_ip ? geo.resolve(r.client_ip) : { private: true };
+      return {
+        ts: Number(r.ts),
+        action: r.action,
+        username: r.username,
+        ip: r.client_ip,
+        app: r.app,
+        serverId: r.server_id === null ? null : Number(r.server_id),
+        private: Boolean(loc.private),
+        city: loc.city || null,
+        country: loc.country || null,
+        countryCode: loc.countryCode || null,
+      };
+    });
+
+    json(ctx.res, 200, { minutes, summary, items });
   });
 
   // Addresses that reached one server during the last N minutes (default: one hour).

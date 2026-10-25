@@ -79,6 +79,10 @@
           <span class="legend-bar"></span>
           <span class="legend-txt">bright = just now · dim = edge of window</span>
         </div>
+        <div class="legend legend-auth hidden" id="legend-auth">
+          <span class="legend-ring"></span>
+          <span class="legend-txt">red ring = failed authentik sign-in</span>
+        </div>
         <div class="map-hint">scroll to zoom · drag to pan · double-click to zoom in</div>
       </div>
 
@@ -87,8 +91,10 @@
         <div class="sc-name" id="sc-name"></div>
         <div class="sc-meta" id="sc-meta"></div>
         <ul class="sc-agents" id="sc-agents"></ul>
-        <div class="sc-section"><span>addresses · last hour</span><span id="sc-count"></span></div>
+        <div class="sc-section"><span>addresses · 1h</span><span id="sc-count"></span></div>
         <ul class="sc-conns" id="sc-conns"></ul>
+        <div class="sc-section hidden" id="sc-auth-section"><span>authentik · 1h</span><span id="sc-auth-count"></span></div>
+        <ul class="sc-conns hidden" id="sc-auth"></ul>
       </div>
 
       <div class="hud hud-hosts">

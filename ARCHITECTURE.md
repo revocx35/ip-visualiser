@@ -47,6 +47,11 @@ the last N hours?* One hub, many agents — one agent per Nginx Proxy Manager in
   outbound lookups. Rows written before the online provider existed carry no `source` column
   value, so an upgrade re-resolves them on first sight instead of keeping stale coordinates.
   Private ranges are classified and never drawn, and never sent to the provider.
+- **authentik events (optional):** a poller reads `login` / `login_failed` events from authentik's
+  API every 30 s into an `auth_events` table (attempted username, client IP, target app, outcome;
+  passwords are never read — authentik masks them). The map draws failed attempts as red rings and
+  the server card lists the last hour. It uses a dedicated service account whose only permission is
+  `authentik_events.view_event`; the integration is off when `AUTHENTIK_URL` is unset.
 - **Sessions:** random 32-byte token in an `HttpOnly; SameSite=Lax` cookie (plus `Secure`
   behind TLS), stored as sha256, 7-day sliding expiry, one row per session.
 

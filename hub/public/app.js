@@ -220,12 +220,16 @@ function applyState(data) {
   state.servers = data.servers || [];
   state.agents = data.agents || [];
   state.connections = data.connections || [];
+  state.auth = data.auth || null;
   state.stats = data.stats || state.stats;
   state.serverTime = data.serverTime || Math.floor(Date.now() / 1000);
   state.lastFetch = Date.now();
   state.live = true;
   updateHud();
-  if (map.selectedId) map.loadConnections(map.selectedId);
+  if (map.selectedId) {
+    map.loadConnections(map.selectedId);
+    map.loadAuth(map.selectedId);
+  }
   if (state.page === 'servers') renderServers();
   if (state.page === 'agents') renderAgents();
 }
@@ -531,11 +535,26 @@ const map = {
     const r = this.canvas.getBoundingClientRect();
     const mx = e.clientX - r.left;
     const my = e.clientY - r.top;
-    const servers = this.hits.filter((h) => h.type === 'server' && Math.hypot(h.x - mx, h.y - my) < 26);
-    if (servers.length) return servers[0];
+    // servers first, then failed sign-ins, then plain connection dots: a failed login that
+    // shares a spot with a normal connection must still be hoverable.
+    for (const type of ['server', 'auth']) {
+      const limit = type === 'server' ? 26 : 14;
+      let best = null;
+      let bestDist = limit;
+      for (const h of this.hits) {
+        if (h.type !== type) continue;
+        const d = Math.hypot(h.x - mx, h.y - my);
+        if (d < bestDist) {
+          best = h;
+          bestDist = d;
+        }
+      }
+      if (best) return best;
+    }
     let best = null;
     let bestDist = 14;
     for (const h of this.hits) {
+      if (h.type !== 'ip') continue;
       const d = Math.hypot(h.x - mx, h.y - my);
       if (d < bestDist) {
         best = h;
@@ -571,7 +590,25 @@ const map = {
           .join('')
       : '<li><span class="muted">no agent attached</span></li>';
     card.classList.remove('hidden');
+    $('#tooltip').classList.add('hidden');
     this.loadConnections(server.id);
+    this.loadAuth(server.id);
+  },
+
+  /** authentik login attempts recorded against the selected server. */
+  async loadAuth(serverId) {
+    if (this.selectedId !== serverId) return;
+    const section = $('#sc-auth-section');
+    const list = $('#sc-auth');
+    if (!section || !list) return;
+    try {
+      const data = await api(`/api/auth-events?minutes=60&limit=40&serverId=${serverId}`);
+      if (this.selectedId !== serverId) return;
+      renderServerAuth(data);
+    } catch {
+      section.classList.add('hidden');
+      list.classList.add('hidden');
+    }
   },
 
   /** Addresses that reached the selected server during the last hour. */
@@ -726,6 +763,42 @@ const map = {
     }
     ctx.restore();
 
+    // ---- failed authentik sign-ins (red rings, same recency fade)
+    const authFailed = state.auth && Array.isArray(state.auth.ips) ? state.auth.ips : [];
+    if (authFailed.length) {
+      // Drawn with source-over (not 'lighter') so the red survives on top of a bright
+      // connection dot, with a dark halo to keep it readable on land.
+      ctx.save();
+      for (const a of authFailed) {
+        const age = Math.max(0, now - a.lastTs);
+        const frac = Math.max(0, 1 - age / windowSec);
+        if (frac <= 0) continue;
+        const [x, y] = this.project(a.lon, a.lat);
+        const alpha = 0.35 + 0.65 * frac;
+        const r = 8 + 3 * frac;
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(6, 11, 18, 0.72)';
+        ctx.lineWidth = 4;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(248, 113, 113, ${alpha.toFixed(3)})`;
+        ctx.lineWidth = 1.7;
+        ctx.stroke();
+        ctx.strokeStyle = `rgba(252, 165, 165, ${alpha.toFixed(3)})`;
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.moveTo(x - 3.2, y - 3.2);
+        ctx.lineTo(x + 3.2, y + 3.2);
+        ctx.moveTo(x + 3.2, y - 3.2);
+        ctx.lineTo(x - 3.2, y + 3.2);
+        ctx.stroke();
+        this.hits.push({ type: 'auth', x, y, data: a });
+      }
+      ctx.restore();
+    }
+
     let pulse = (Date.now() % 2400) / 2400;
     for (const server of state.servers) {
       const [x, y] = this.project(server.lon, server.lat);
@@ -818,7 +891,8 @@ const map = {
       tip.classList.add('hidden');
       return;
     }
-    tip.innerHTML = best.type === 'server' ? serverTip(best.data) : ipTip(best.data, best.server);
+    tip.innerHTML =
+      best.type === 'server' ? serverTip(best.data) : best.type === 'auth' ? authTip(best.data) : ipTip(best.data, best.server);
     tip.classList.remove('hidden');
     const tw = tip.offsetWidth;
     const th = tip.offsetHeight;
@@ -870,11 +944,47 @@ function renderServerConnections(data) {
           ? `${it.city}${it.countryCode ? `, ${it.countryCode}` : ''}`
           : it.country || 'unknown location';
       return `<li title="${esc(it.host || '')}">
-        <div class="sc-ip"><span class="mono">${esc(it.ip)}</span><span class="sc-n">×${fmtCount(it.count)}</span></div>
-        <div class="sc-sub"><span>${esc(place)}</span><span>${esc(fmtAgo(now - it.lastTs))}</span></div>
+        <div class="sc-line"><span class="mono sc-ipv">${esc(it.ip)}</span><span class="sc-place">${esc(place)}</span><span class="sc-n">×${fmtCount(it.count)}</span><span class="sc-age">${esc(fmtAgo(now - it.lastTs))}</span></div>
       </li>`;
     })
     .join('');
+}
+
+function renderServerAuth(data) {
+  const now = Math.floor(Date.now() / 1000);
+  const section = $('#sc-auth-section');
+  const list = $('#sc-auth');
+  if (!section || !list) return;
+  if (!data || !Array.isArray(data.items) || !data.items.length) {
+    section.classList.add('hidden');
+    list.classList.add('hidden');
+    return;
+  }
+  section.classList.remove('hidden');
+  list.classList.remove('hidden');
+  $('#sc-auth-count').textContent = `${data.summary.failed} failed · ${data.summary.success} ok`;
+  list.innerHTML = data.items
+    .map((it) => {
+      const fail = it.action === 'login_failed';
+      const who = it.username || (fail ? 'unknown user' : 'unknown');
+      const where = it.private ? 'LAN' : it.city ? `${it.city}${it.countryCode ? `, ${it.countryCode}` : ''}` : it.country || '';
+      return `<li class="${fail ? 'fail' : ''}" title="${esc([where, it.app, it.username].filter(Boolean).join(' · '))}">
+        <div class="sc-line"><span class="sc-who">${esc(who)}</span><span class="mono sc-place">${esc(it.ip || '—')}</span><span class="sc-n">${fail ? 'failed' : 'ok'}</span><span class="sc-age">${esc(fmtAgo(now - it.ts))}</span></div>
+      </li>`;
+    })
+    .join('');
+}
+
+function authTip(a) {
+  const now = Math.floor(Date.now() / 1000);
+  const place = [a.city, a.country].filter(Boolean).join(', ') || 'unknown location';
+  const users = (a.users || []).filter(Boolean);
+  return `<div class="tt-title" style="color:#fca5a5">failed sign-ins</div>
+    <div class="tt-row"><span>address</span><b class="mono">${esc(a.ip)}</b></div>
+    <div class="tt-row"><span>place</span><b>${esc(place)}</b></div>
+    <div class="tt-row"><span>attempts</span><b>${fmtCount(a.count)}</b></div>
+    <div class="tt-row"><span>last</span><b>${esc(fmtAgo(now - a.lastTs))}</b></div>
+    ${users.length ? `<div class="tt-row" style="margin-top:4px"><span>as</span><span style="text-align:right">${users.map(esc).join('<br>')}</span></div>` : ''}`;
 }
 
 function serverTip(server) {
@@ -947,6 +1057,9 @@ function updateHud() {
   pill.classList.toggle('on', state.live);
   pill.classList.toggle('err', !state.live);
   $('#live-label').textContent = state.live ? 'live' : 'offline';
+
+  const authLegend = $('#legend-auth');
+  if (authLegend) authLegend.classList.toggle('hidden', !(state.auth && state.auth.failed > 0));
 
   const empty = $('#empty-hint');
   if (!state.servers.length) {

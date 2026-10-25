@@ -65,6 +65,17 @@ CREATE TABLE IF NOT EXISTS geo (
   looked_up_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS auth_events (
+  pk TEXT PRIMARY KEY,
+  server_id INTEGER,
+  ts INTEGER NOT NULL,
+  action TEXT NOT NULL,
+  username TEXT,
+  client_ip TEXT,
+  app TEXT
+);
+CREATE INDEX IF NOT EXISTS auth_events_ts ON auth_events(ts);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -119,8 +130,9 @@ export function setSetting(db, key, value) {
 export function prune(db, retentionHours) {
   const cutoff = Math.floor(Date.now() / 1000) - Math.max(1, retentionHours) * 3600;
   const res = db.prepare('DELETE FROM buckets WHERE ts_minute < ?').run(cutoff);
+  const auth = db.prepare('DELETE FROM auth_events WHERE ts < ?').run(cutoff);
   const stale = db
     .prepare('DELETE FROM geo WHERE looked_up_at < ?')
     .run(Math.floor(Date.now() / 1000) - 90 * 86400);
-  return { buckets: Number(res.changes || 0), geo: Number(stale.changes || 0) };
+  return { buckets: Number(res.changes || 0), authEvents: Number(auth.changes || 0), geo: Number(stale.changes || 0) };
 }
