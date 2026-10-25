@@ -47,8 +47,8 @@ the last N hours?* One hub, many agents — one agent per Nginx Proxy Manager in
   outbound lookups. Rows written before the online provider existed carry no `source` column
   value, so an upgrade re-resolves them on first sight instead of keeping stale coordinates.
   Private ranges are classified and never drawn, and never sent to the provider.
-- **authentik events (optional):** a poller reads `login` / `login_failed` events from authentik's
-  API every 30 s into an `auth_events` table (attempted username, client IP, target app, outcome;
+- **authentik events (optional):** one poller per authentik instance (home and the VPS each run
+  their own; configured through `AUTHENTIK_INSTANCES`) reads `login` / `login_failed` events every 30 s into an `auth_events` table (attempted username, client IP, target app, outcome;
   passwords are never read — authentik masks them). The map draws failed attempts as red rings and
   the server card lists the last hour. It uses a dedicated service account whose only permission is
   `authentik_events.view_event`; the integration is off when `AUTHENTIK_URL` is unset.
@@ -102,7 +102,7 @@ See `README.md`. All endpoints are JSON; agent ingest is the only token-authenti
 - **Agents:** reach the hub over the LAN, or over a VPN when the hub is at home and the agent is
   not (this deployment uses a Hysteria2 tunnel whose TUN device lives in the agent's own network
   namespace). Ingest is therefore **not published**: both agents post to the hub's own address
-  (`http://192.0.2.54:8920`), and the public host does not forward `/api/ingest` at all. The
+  (`http://hub.internal:8920`), and the public host does not forward `/api/ingest` at all. The
   endpoint rejects unknown tokens with 401 and never trusts a body it cannot validate.
 - **Agent tokens:** 24 random bytes, stored sha256, returned once, rotatable per agent,
   revocable by deleting the agent. A leaked token can inject fake events for its own server

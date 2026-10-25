@@ -15,7 +15,7 @@ function tempDb() {
 test('unresolvable addresses are never sent to the provider', () => {
   const db = tempDb();
   const geo = createGeoResolver(db, { provider: 'ip-api' });
-  assert.deepEqual(geo.resolve('192.0.2.53'), { private: true, ip: '192.0.2.53' });
+  assert.deepEqual(geo.resolve('192.168.1.53'), { private: true, ip: '192.168.1.53' });
   assert.deepEqual(geo.resolve('127.0.0.1'), { private: true, ip: '127.0.0.1' });
   assert.equal(geo.stats().pending, 0, 'private ranges do not enter the queue');
   geo.stop();
@@ -57,9 +57,9 @@ test('rows written before the online provider are treated as stale', () => {
   const now = Math.floor(Date.now() / 1000);
   db.prepare(
     `INSERT INTO geo(ip, private, lat, lon, city, region, country, country_code, looked_up_at)
-     VALUES ('203.0.113.238', 0, 55.75, 37.62, 'Moscow', NULL, 'RU', 'RU', ?)`,
+     VALUES ('203.0.113.7', 0, 55.75, 37.62, 'Moscow', NULL, 'RU', 'RU', ?)`,
   ).run(now);
-  geo.resolve('203.0.113.238');
+  geo.resolve('203.0.113.7');
   assert.equal(geo.stats().pending, 1, 'a source-less row is queued for a real lookup');
   geo.stop();
 });

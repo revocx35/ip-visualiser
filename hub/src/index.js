@@ -7,7 +7,7 @@ import { LoginThrottle, sessionUser } from './auth.js';
 import { getSettings, openDb, prune } from './db.js';
 import { buildApi, HttpError } from './api.js';
 import { createGeoResolver, normalizeIp } from './geo.js';
-import { createAuthentikPoller } from './authentik.js';
+import { createAuthentikPollers } from './authentik.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -43,30 +43,68 @@ const geo = createGeoResolver(db, {
 });
 geo.start();
 
-// Optional: pull authentik login events (AUTHENTIK_URL + AUTHENTIK_TOKEN).
+// Optional: pull authentik login events. Either AUTHENTIK_INSTANCES (JSON list) or the
+// single-instance AUTHENTIK_URL/AUTHENTIK_TOKEN pair.
 let authentik = null;
-if (process.env.AUTHENTIK_URL && process.env.AUTHENTIK_TOKEN) {
-  const wanted = (process.env.AUTHENTIK_SERVER || '').trim();
-  let serverRow = null;
-  if (wanted) {
-    serverRow = /^\d+$/.test(wanted)
-      ? db.prepare('SELECT id, name FROM servers WHERE id = ?').get(Number(wanted))
-      : db.prepare('SELECT id, name FROM servers WHERE name = ?').get(wanted);
-    if (!serverRow) log.warn('AUTHENTIK_SERVER does not match a server, events will be unattributed', { wanted });
+function authentikConfigs() {
+  const raw = (process.env.AUTHENTIK_INSTANCES || '').trim();
+  if (raw) {
+    try {
+      const list = JSON.parse(raw);
+      if (Array.isArray(list)) return list.filter((c) => c && c.url && c.token);
+    } catch (err) {
+      log.error('AUTHENTIK_INSTANCES is not valid JSON', { error: String(err && err.message) });
+    }
+    return [];
   }
-  authentik = createAuthentikPoller({
-    db,
-    log,
-    baseUrl: process.env.AUTHENTIK_URL,
-    token: process.env.AUTHENTIK_TOKEN,
-    serverId: serverRow ? Number(serverRow.id) : null,
-    insecure: process.env.AUTHENTIK_INSECURE !== '0',
-    intervalMs: Number(process.env.AUTHENTIK_POLL_MS || 30000),
-    backfillHours: Number(process.env.AUTHENTIK_BACKFILL_HOURS || 24),
-    ownHost: process.env.AUTHENTIK_HOST || null,
-  });
+  if (process.env.AUTHENTIK_URL && process.env.AUTHENTIK_TOKEN) {
+    return [
+      {
+        url: process.env.AUTHENTIK_URL,
+        token: process.env.AUTHENTIK_TOKEN,
+        server: process.env.AUTHENTIK_SERVER || null,
+        host: process.env.AUTHENTIK_HOST || null,
+        insecure: process.env.AUTHENTIK_INSECURE !== '0',
+        backfillHours: Number(process.env.AUTHENTIK_BACKFILL_HOURS || 168),
+        intervalMs: Number(process.env.AUTHENTIK_POLL_MS || 30000),
+      },
+    ];
+  }
+  return [];
+}
+
+function resolveServer(wanted) {
+  const name = (wanted || '').trim();
+  if (!name) return null;
+  const row = /^\d+$/.test(name)
+    ? db.prepare('SELECT id, name FROM servers WHERE id = ?').get(Number(name))
+    : db.prepare('SELECT id, name FROM servers WHERE name = ?').get(name);
+  if (!row) log.warn('authentik instance points at an unknown server, events stay unattributed', { wanted: name });
+  return row || null;
+}
+
+const akConfigs = authentikConfigs()
+  .map((cfg) => {
+    const serverRow = resolveServer(cfg.server);
+    return {
+      baseUrl: cfg.url,
+      token: cfg.token,
+      serverId: serverRow ? Number(serverRow.id) : null,
+      insecure: cfg.insecure !== false,
+      intervalMs: Number(cfg.intervalMs || process.env.AUTHENTIK_POLL_MS || 30000),
+      backfillHours: Number(cfg.backfillHours || process.env.AUTHENTIK_BACKFILL_HOURS || 168),
+      ownHost: cfg.host || null,
+    };
+  })
+  .filter((cfg) => cfg.baseUrl && cfg.token);
+
+if (akConfigs.length) {
+  authentik = createAuthentikPollers(akConfigs, { db, log });
   authentik.start();
-  log.info('authentik polling enabled', { url: process.env.AUTHENTIK_URL, server: serverRow ? serverRow.name : null });
+  log.info('authentik polling enabled', {
+    instances: akConfigs.map((c) => c.baseUrl),
+    servers: akConfigs.map((c) => c.serverId),
+  });
 }
 
 const handleApi = buildApi({ db, throttle, log, geo, authentik });

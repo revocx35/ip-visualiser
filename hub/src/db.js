@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS settings (
 
 export const DEFAULT_SETTINGS = {
   lineColor: '#35e0ff',
+  lineWidth: 0.7,
   timeWindowMinutes: 120,
   retentionHours: 168,
   showPrivate: false,

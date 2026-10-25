@@ -60,11 +60,11 @@ export function buildApi({ db, throttle, log, geo, authentik = null }) {
   const pub = (method, pattern, handler) => publicRoutes.push({ method, pattern, handler });
 
   // ---- public -----------------------------------------------------------
-  pub('GET', /^\/api\/health$/, async (ctx) => json(ctx.res, 200, { ok: true, version: '1.4.0', geo: geo.stats(), ...(authentik ? { authentik: authentik.stats() } : {}) }));
+  pub('GET', /^\/api\/health$/, async (ctx) => json(ctx.res, 200, { ok: true, version: '1.5.0', geo: geo.stats(), ...(authentik ? { authentik: authentik.stats() } : {}) }));
 
   pub('GET', /^\/api\/bootstrap$/, async (ctx) => {
     const users = Number(db.prepare('SELECT COUNT(*) AS n FROM users').get().n);
-    json(ctx.res, 200, { setupRequired: users === 0, app: 'ip-visualiser', version: '1.4.0' });
+    json(ctx.res, 200, { setupRequired: users === 0, app: 'ip-visualiser', version: '1.5.0' });
   });
 
   pub('POST', /^\/api\/setup$/, async (ctx) => {
@@ -470,6 +470,10 @@ export function buildApi({ db, throttle, log, geo, authentik = null }) {
     if (body.lineColor !== undefined) {
       if (!COLOR_RE.test(String(body.lineColor))) throw new HttpError(400, 'lineColor must be a hex value like #35e0ff');
       setSetting(db, 'lineColor', String(body.lineColor));
+    }
+    if (body.lineWidth !== undefined) {
+      const width = clampNumber(body.lineWidth, 'lineWidth', 0.2, 3);
+      setSetting(db, 'lineWidth', Math.round(width * 100) / 100);
     }
     if (body.timeWindowMinutes !== undefined) {
       setSetting(db, 'timeWindowMinutes', Math.round(clampNumber(body.timeWindowMinutes, 'timeWindowMinutes', 1, 1440)));

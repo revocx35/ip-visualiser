@@ -73,8 +73,15 @@ POST /api/ingest               {agentVersion, events:[{t, ip, host, b}]} (agent 
 
 Set these on the hub to pull authentik's authentication events into the map and the server card:
 
+Several instances can be polled at once (each has its own cursor and server attribution) with
+`AUTHENTIK_INSTANCES`, a JSON array; the single-instance variables below are the shorthand:
+
 ```
-AUTHENTIK_URL=https://192.0.2.47:9443   # direct API address, not necessarily the public host
+AUTHENTIK_INSTANCES=[{"url":"https://authentik.internal:9443","token":"...","server":"home",
+                      "insecure":true},{"url":"https://auth.example.com","token":"...","server":"vps"}]
+
+# or a single instance:
+AUTHENTIK_URL=https://authentik.internal:9443   # direct API address, not necessarily the public host
 AUTHENTIK_TOKEN=<api token>                 # service account with authentik_events.view_event only
 AUTHENTIK_SERVER=home                       # server name the events are attributed to
 AUTHENTIK_HOST=auth.example.com             # do not report this host as the target app

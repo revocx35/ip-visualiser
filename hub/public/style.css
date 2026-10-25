@@ -182,6 +182,7 @@ input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border: 2px s
 .ctl-head span { font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
 .ctl-head strong { font-size: 14px; font-weight: 620; }
 .ctl-scale { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--muted); margin-top: -2px; }
+.ctl-head.ctl-sub { margin-top: 10px; margin-bottom: 2px; }
 .legend { margin-top: 10px; }
 .legend-bar {
   display: block; height: 4px; border-radius: 4px;

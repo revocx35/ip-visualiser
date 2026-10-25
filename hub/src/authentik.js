@@ -103,6 +103,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 export function createAuthentikPoller(opts) {
   const { db, log, baseUrl, token } = opts;
   const intervalMs = Math.max(5000, Number(opts.intervalMs || 30000));
+  const cursorKey = opts.cursorKey || 'authentik_cursor';
   const serverId = opts.serverId ?? null;
   const insecure = opts.insecure !== false;
   const backfillHours = Math.max(1, Number(opts.backfillHours || 24));
@@ -118,7 +119,7 @@ export function createAuthentikPoller(opts) {
 
   function loadCursor() {
     try {
-      const row = db.prepare("SELECT value FROM settings WHERE key = 'authentik_cursor'").get();
+      const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(cursorKey);
       if (row) cursor = JSON.parse(row.value);
     } catch {
       cursorLoadFailed = true;
@@ -130,8 +131,8 @@ export function createAuthentikPoller(opts) {
     cursor = value;
     try {
       db.prepare(
-        "INSERT INTO settings(key, value) VALUES ('authentik_cursor', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-      ).run(JSON.stringify(value));
+        'INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+      ).run(cursorKey, JSON.stringify(value));
     } catch (err) {
       log.warn('could not persist the authentik cursor', { error: String(err && err.message) });
     }
@@ -173,9 +174,12 @@ export function createAuthentikPoller(opts) {
 
   return {
     stats() {
-      const row = db.prepare('SELECT COUNT(*) AS n, MAX(ts) AS last FROM auth_events').get();
+      const row = db
+        .prepare('SELECT COUNT(*) AS n, MAX(ts) AS last FROM auth_events WHERE server_id IS ?')
+        .get(serverId);
       return {
         ...stats,
+        serverId,
         stored: Number(row.n || 0),
         newest: row.last === null ? null : Number(row.last),
         cursor,
@@ -201,6 +205,50 @@ export function createAuthentikPoller(opts) {
     },
     stop() {
       running = false;
+    },
+  };
+}
+
+/**
+ * Several authentik instances (home and the VPS each run their own), each with its own
+ * cursor and its own server attribution.
+ */
+export function createAuthentikPollers(configs, deps) {
+  const pollers = configs.map((cfg) => {
+    let host = 'instance';
+    try {
+      host = new URL(cfg.baseUrl).host;
+    } catch {
+      /* keep the fallback */
+    }
+    return createAuthentikPoller({
+      ...deps,
+      ...cfg,
+      cursorKey: `authentik_cursor:${host}`,
+    });
+  });
+
+  return {
+    pollers,
+    start() {
+      pollers.forEach((p) => p.start());
+    },
+    stop() {
+      pollers.forEach((p) => p.stop());
+    },
+    stats() {
+      const perInstance = pollers.map((p) => p.stats());
+      const row = deps.db.prepare('SELECT COUNT(*) AS n, MAX(ts) AS last FROM auth_events').get();
+      return {
+        instances: perInstance.length,
+        polls: perInstance.reduce((sum, s) => sum + s.polls, 0),
+        inserted: perInstance.reduce((sum, s) => sum + s.inserted, 0),
+        failedPolls: perInstance.reduce((sum, s) => sum + s.failedPolls, 0),
+        lastError: perInstance.find((s) => s.lastError)?.lastError || null,
+        stored: Number(row.n || 0),
+        newest: row.last === null ? null : Number(row.last),
+        perInstance,
+      };
     },
   };
 }

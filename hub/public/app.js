@@ -207,6 +207,7 @@ async function enterApp() {
   setPage('map');
   const s = Math.min(WINDOW_MAX, Math.max(WINDOW_MIN, state.settings.timeWindowMinutes || 120));
   setWindow(s, { refetch: false });
+  syncThickness();
   startPolling();
 }
 
@@ -735,7 +736,8 @@ const map = {
       ctx.moveTo(sx, sy);
       ctx.quadraticCurveTo((sx + tx) / 2, (sy + ty) / 2 - dist * 0.16, tx, ty);
       ctx.strokeStyle = rgba(color, alpha);
-      ctx.lineWidth = 0.5 + 1.7 * Math.pow(frac, 1.4) + Math.min(2, Math.log10(1 + cn.count) * 0.55);
+      const widthScale = Math.max(0.15, Number(state.settings.lineWidth ?? 1));
+      ctx.lineWidth = (0.5 + 1.7 * Math.pow(frac, 1.4) + Math.min(2, Math.log10(1 + cn.count) * 0.55)) * widthScale;
       ctx.lineCap = 'round';
       ctx.stroke();
 
@@ -762,6 +764,14 @@ const map = {
       ctx.fill();
     }
     ctx.restore();
+
+    let pulse = (Date.now() % 2400) / 2400;
+    for (const server of state.servers) {
+      const [x, y] = this.project(server.lon, server.lat);
+      const recent = drawn.some((cn) => cn.serverId === server.id);
+      this.drawServer(ctx, x, y, server, defaultColor, recent, pulse, this.selectedId === server.id);
+      this.hits.push({ type: 'server', x, y, data: server });
+    }
 
     // ---- failed authentik sign-ins (red rings, same recency fade)
     const authFailed = state.auth && Array.isArray(state.auth.ips) ? state.auth.ips : [];
@@ -797,14 +807,6 @@ const map = {
         this.hits.push({ type: 'auth', x, y, data: a });
       }
       ctx.restore();
-    }
-
-    let pulse = (Date.now() % 2400) / 2400;
-    for (const server of state.servers) {
-      const [x, y] = this.project(server.lon, server.lat);
-      const recent = drawn.some((cn) => cn.serverId === server.id);
-      this.drawServer(ctx, x, y, server, defaultColor, recent, pulse, this.selectedId === server.id);
-      this.hits.push({ type: 'server', x, y, data: server });
     }
 
     if (this.hover) {
@@ -1035,6 +1037,27 @@ $('#window-slider').addEventListener('input', (e) => {
 });
 $('#window-slider').addEventListener('change', () => {
   setWindow(sliderToMinutes(Number($('#window-slider').value)));
+});
+
+function fmtThickness(v) {
+  return `${Number(v).toFixed(2).replace(/0$/, '')}×`;
+}
+
+function syncThickness() {
+  const v = Math.max(0.2, Math.min(2.5, Number(state.settings.lineWidth ?? 0.7)));
+  const slider = $('#thickness-slider');
+  if (slider) slider.value = String(Math.round(v * 100));
+  const label = $('#thickness-label');
+  if (label) label.textContent = fmtThickness(v);
+}
+
+$('#thickness-slider').addEventListener('input', (e) => {
+  const v = Number(e.target.value) / 100;
+  state.settings.lineWidth = v;
+  $('#thickness-label').textContent = fmtThickness(v);
+});
+$('#thickness-slider').addEventListener('change', () => {
+  saveSettings({ lineWidth: Number(state.settings.lineWidth) }).then(syncThickness);
 });
 
 function updateHud() {
