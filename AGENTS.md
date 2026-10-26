@@ -69,5 +69,6 @@ curl -s localhost:18080/api/health
 - A published docker port keeps the client's source address for traffic from other hosts (the
   `VIEW_ALLOW` check sees the real peer), but hairpin traffic from the docker host itself can look
   like the bridge gateway.
-- The view-only page draws every third frame (~20 fps). That is deliberate: 60 fps full-screen
-  canvas cost ~3 cores on the reference kiosk host, 20 fps costs ~1 and looks the same.
+- The view-only page draws ~20 fps by default (`?fps=N` in the kiosk URL). That is deliberate:
+  60 fps full-screen canvas cost ~3 cores on the reference kiosk host, 20 fps costs ~1 and looks the
+  same; the cost scales with the number of lines drawn, so a busy map needs a lower rate.

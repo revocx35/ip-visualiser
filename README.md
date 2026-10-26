@@ -60,6 +60,11 @@ same payload as `/api/state`), `GET /api/servers/:id/connections`, `GET /api/aut
 `GET /api/health`. Every other path is a 404 and every non-GET is a 405; no session, no
 cookie, no admin route exists on that port. Peers outside `VIEW_ALLOW` get a 403.
 
+The page draws ~20 frames per second instead of 60 (a wall display cannot show more for a fade
+measured in hours, and the redraw is the expensive part). Tune it per screen with a query
+parameter in the kiosk URL — `http://192.168.68.54:8921/?fps=12` for a busy host, `?fps=30` for a
+fast one; the authenticated UI always runs at full rate.
+
 Do **not** put this port behind the reverse proxy — the point is that it needs no
 authentication, which is only acceptable because it is LAN-bound and read-only.
 

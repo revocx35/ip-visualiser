@@ -6,6 +6,17 @@ import { clampPan, clampZoom, zoomAt } from './viewmath.js';
 // map only, no controls that would write anything.
 const VIEW_ONLY = document.documentElement.dataset.viewOnly === '1';
 
+// Frame rate of the view-only page. A wall display cannot show more than a handful of frames
+// per second for a fade measured in hours, and full-screen canvas redraws are the expensive
+// part of the whole app, so this is tunable per screen with ?fps=12 in the kiosk URL — a busy
+// Proxmox node gets a cheaper display without touching the hub.
+const VIEW_FPS = (() => {
+  const fromUrl = Number(new URLSearchParams(location.search).get('fps'));
+  const wanted = Number.isFinite(fromUrl) && fromUrl > 0 ? fromUrl : 20;
+  return Math.min(60, Math.max(1, wanted));
+})();
+const VIEW_FRAME_DIVISOR = Math.max(1, Math.round(60 / VIEW_FPS));
+
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
@@ -316,12 +327,12 @@ const map = {
     $('#sc-close').addEventListener('click', () => this.select(null));
 
     // A wall display has nobody watching individual frames: on the view-only page the loop
-    // draws every third frame (~20 fps), which is indistinguishable for a fade measured in
-    // hours and cuts the CPU burned on a PVE node by ~3x.
+    // draws one frame in VIEW_FRAME_DIVISOR (~20 fps by default, ?fps= tweaks it), which is
+    // indistinguishable for a fade measured in hours and cuts the CPU burned on a PVE node.
     let frame = 0;
     const loop = () => {
       requestAnimationFrame(loop);
-      if (VIEW_ONLY && frame++ % 3 !== 0) return;
+      if (VIEW_ONLY && frame++ % VIEW_FRAME_DIVISOR !== 0) return;
       try {
         this.step();
         this.draw();
