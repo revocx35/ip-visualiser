@@ -90,7 +90,11 @@ export class Tailer {
 
   async saveState() {
     const files = {};
-    for (const [name, st] of this.files) files[name] = { offset: st.offset, ino: st.ino };
+    // `offset` already counts the bytes of an unfinished trailing line held in `partial`;
+    // persist the start of that line so a restart re-reads it instead of losing it.
+    for (const [name, st] of this.files) {
+      files[name] = { offset: Math.max(0, st.offset - Buffer.byteLength(st.partial || '')), ino: st.ino };
+    }
     const tmp = `${this.stateFile}.tmp`;
     try {
       await fsp.mkdir(path.dirname(this.stateFile), { recursive: true });

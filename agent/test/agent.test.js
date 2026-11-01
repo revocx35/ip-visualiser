@@ -94,3 +94,23 @@ test('tailer handles truncation and a partial trailing line', async () => {
   await tailer.poll((ev) => events.push(ev));
   assert.equal(events.length, 3, 'truncated file is re-read from the start');
 });
+
+test('a partial trailing line survives a restart', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ipvis-agent-restart-'));
+  const log = path.join(dir, 'proxy-host-3_access.log');
+  const state = path.join(dir, 'state.json');
+  const half = SAMPLE.slice(0, 40);
+  fs.writeFileSync(log, `${SAMPLE}\n${half}`);
+  const first = new Tailer(dir, state);
+  const seen = [];
+  await first.poll((ev) => seen.push(ev));
+  assert.equal(seen.length, 1);
+  await first.saveState();
+
+  // The agent restarts, then the proxy finishes writing the line.
+  fs.appendFileSync(log, `${SAMPLE.slice(40)}\n`);
+  const second = new Tailer(dir, state);
+  await second.poll((ev) => seen.push(ev));
+  assert.equal(seen.length, 2);
+  assert.equal(seen[1].host, 'photos.example.com');
+});
