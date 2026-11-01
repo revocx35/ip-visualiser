@@ -9,6 +9,7 @@ design; this file is the practical map.
 hub/                 the server: web UI + JSON API + SQLite
   src/index.js       http servers (authenticated + view-only), static files, logging
   src/api.js         route table; buildApi({viewOnly}) returns the read-only surface
+  src/clientip.js    client address from X-Forwarded-For (right-most hop) for logs/throttle
   src/viewallow.js   CIDR matching for the view-only listener (unit-tested)
   src/db.js          node:sqlite schema, settings helpers, retention prune
   src/geo.js         ip-api batch resolver + geoip-lite fallback
@@ -52,7 +53,9 @@ curl -s localhost:18080/api/health
 - Never add a route to the view-only API that writes, needs a session, or is not a GET.
 - Never publish `VIEW_PORT` through the reverse proxy, a port forward, or `0.0.0.0` on a host that
   is not LAN-bound. It has no authentication by design.
-- Never trust `X-Forwarded-For` on the view-only listener.
+- Never trust `X-Forwarded-For` on the view-only listener. On the main listener (`TRUST_PROXY`)
+  only the right-most hop is used (`src/clientip.js`): the proxy appends it, everything left of
+  it is client-supplied and must never key the login throttle.
 - Never store client IPs anywhere but the local SQLite file, and never turn on an outbound geo
   provider without knowing that client IPs leave the box (`GEO_PROVIDER=offline` prevents it).
 - Never log request bodies, agent tokens or passwords.

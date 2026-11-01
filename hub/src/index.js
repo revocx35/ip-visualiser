@@ -9,6 +9,7 @@ import { buildApi, HttpError } from './api.js';
 import { createGeoResolver, normalizeIp } from './geo.js';
 import { createAuthentikPollers } from './authentik.js';
 import { isViewAllowed, parseCidrs } from './viewallow.js';
+import { clientIpFrom } from './clientip.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -135,11 +136,7 @@ const MIME = {
 };
 
 function clientIp(req) {
-  if (TRUST_PROXY) {
-    const xff = req.headers['x-forwarded-for'];
-    if (typeof xff === 'string' && xff.length) return normalizeIp(xff.split(',')[0]);
-  }
-  return normalizeIp(req.socket.remoteAddress);
+  return clientIpFrom(req.headers, req.socket.remoteAddress, TRUST_PROXY);
 }
 
 function parseCookies(header) {
