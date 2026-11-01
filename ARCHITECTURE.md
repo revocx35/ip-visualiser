@@ -48,7 +48,8 @@ the last N hours?* One hub, many agents — one agent per Nginx Proxy Manager in
   value, so an upgrade re-resolves them on first sight instead of keeping stale coordinates.
   Private ranges are classified and never drawn, and never sent to the provider.
 - **authentik events (optional):** one poller per authentik instance (home and the VPS each run
-  their own; configured through `AUTHENTIK_INSTANCES`) reads `login` / `login_failed` events every 30 s into an `auth_events` table (attempted username, client IP, target app, outcome;
+  their own; configured through `AUTHENTIK_INSTANCES`) reads `login` / `login_failed` events every 30 s (oldest-first, at most 5 pages per poll; a
+  bigger burst is finished by the next polls, the cursor never passes an unread event) into an `auth_events` table (attempted username, client IP, target app, outcome;
   passwords are never read — authentik masks them). The map draws failed attempts as red rings and
   the server card lists the last hour. It uses a dedicated service account whose only permission is
   `authentik_events.view_event`; the integration is off when `AUTHENTIK_URL` is unset.

@@ -74,3 +74,52 @@ test('the authentik host itself is not reported as the target app', () => {
   const row = normalizeEvent(failed, 1, { ownHost: 'app.example.com' });
   assert.equal(row.app, null);
 });
+
+// A burst bigger than MAX_PAGES * PAGE_SIZE (500) must not lose the events past page 5.
+test('poller keeps every event of a burst larger than five pages', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { openDb } = await import('../src/db.js');
+  const { createAuthentikPoller } = await import('../src/authentik.js');
+  const db = openDb(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ipvis-ak-')), 'ak.db'));
+
+  const base = Date.parse('2026-10-31T10:00:00.000Z');
+  const all = Array.from({ length: 730 }, (_, i) => ({
+    pk: `e${i}`,
+    action: 'login_failed',
+    client_ip: '81.2.69.142',
+    created: new Date(base + i * 1000).toISOString(),
+    context: { username: `u${i}` },
+  }));
+
+  // Minimal authentik: filters on created__gte, honours ordering and page/page_size.
+  const fetchJson = async (url) => {
+    const u = new URL(url);
+    const action = u.searchParams.get('action');
+    const since = u.searchParams.get('created__gte');
+    const size = Number(u.searchParams.get('page_size'));
+    const page = Number(u.searchParams.get('page') || 1);
+    let rows = all.filter((e) => e.action === action && e.created >= since);
+    rows.sort((a, b) => (a.created < b.created ? -1 : 1));
+    if (u.searchParams.get('ordering') === '-created') rows.reverse();
+    return {
+      pagination: { total_pages: Math.ceil(rows.length / size) || 1 },
+      results: rows.slice((page - 1) * size, page * size),
+    };
+  };
+
+  const poller = createAuthentikPoller({
+    db,
+    log: { info() {}, warn() {} },
+    baseUrl: 'https://ak.example',
+    token: 't',
+    backfillHours: 24 * 365 * 10,
+    fetchJson,
+  });
+  poller.loadCursor();
+  await poller.poll();
+  await poller.poll();
+  const n = Number(db.prepare('SELECT COUNT(*) AS n FROM auth_events').get().n);
+  assert.equal(n, all.length);
+});

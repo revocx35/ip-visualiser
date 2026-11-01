@@ -108,6 +108,7 @@ export function createAuthentikPoller(opts) {
   const insecure = opts.insecure !== false;
   const backfillHours = Math.max(1, Number(opts.backfillHours || 24));
   const ownHost = opts.ownHost || null;
+  const fetchJson = opts.fetchJson || getJson;
 
   const insert = db.prepare(
     'INSERT OR IGNORE INTO auth_events(pk, server_id, ts, action, username, client_ip, app) VALUES (?, ?, ?, ?, ?, ?, ?)',
@@ -138,41 +139,60 @@ export function createAuthentikPoller(opts) {
     }
   }
 
+  // Oldest-first, so that when a burst exceeds MAX_PAGES the events we did not reach are
+  // all *newer* than the ones we stored and the next poll picks them up from the cursor.
+  // (Newest-first plus "cursor = newest seen" silently dropped everything past page 5.)
   async function fetchAction(action, sinceIso) {
     const rows = [];
+    let truncated = false;
     for (let page = 0; page < MAX_PAGES; page += 1) {
       const url =
         `${baseUrl.replace(/\/+$/, '')}/api/v3/events/events/?action=${encodeURIComponent(action)}` +
-        `&created__gte=${encodeURIComponent(sinceIso)}&ordering=-created&page_size=${PAGE_SIZE}` +
+        `&created__gte=${encodeURIComponent(sinceIso)}&ordering=created&page_size=${PAGE_SIZE}` +
         (page ? `&page=${page + 1}` : '');
-      const data = await getJson(url, token, { insecure });
+      const data = await fetchJson(url, token, { insecure });
       const results = Array.isArray(data.results) ? data.results : [];
       rows.push(...results);
-      if (results.length < PAGE_SIZE || !data.pagination || page + 1 >= (data.pagination.total_pages || 1)) break;
+      const lastPage = results.length < PAGE_SIZE || !data.pagination || page + 1 >= (data.pagination.total_pages || 1);
+      if (lastPage) break;
+      if (page + 1 >= MAX_PAGES) truncated = true;
     }
-    return rows;
+    return { rows, truncated };
+  }
+
+  function newestOf(rows, floor) {
+    let newest = floor;
+    for (const event of rows) {
+      if (typeof event.created === 'string' && event.created > newest) newest = event.created;
+    }
+    return newest;
   }
 
   async function poll() {
     const since = cursor;
     const [failed, ok] = await Promise.all([fetchAction('login_failed', since), fetchAction('login', since)]);
-    let newest = since;
     let inserted = 0;
-    for (const event of [...failed, ...ok]) {
+    for (const event of [...failed.rows, ...ok.rows]) {
       const row = normalizeEvent(event, serverId, { ownHost });
       if (!row) continue;
       const res = insert.run(row.pk, row.serverId, row.ts, row.action, row.username, row.clientIp, row.app);
       inserted += Number(res.changes) || 0;
-      if (typeof event.created === 'string' && event.created > newest) newest = event.created;
     }
+    // Both actions share one cursor: if either was cut short, the cursor may only move as
+    // far as that action got, or its remaining events would fall behind the cursor.
+    const capped = [failed, ok].filter((r) => r.truncated).map((r) => newestOf(r.rows, since));
+    const newest = capped.length
+      ? capped.reduce((a, b) => (a < b ? a : b))
+      : newestOf([...failed.rows, ...ok.rows], since);
     if (newest !== since) saveCursor(newest);
     stats.polls += 1;
     stats.inserted += inserted;
     stats.lastPoll = Math.floor(Date.now() / 1000);
-    if (inserted) log.info('authentik events ingested', { inserted, actions: { failed: failed.length, ok: ok.length } });
+    if (inserted) log.info('authentik events ingested', { inserted, actions: { failed: failed.rows.length, ok: ok.rows.length } });
   }
 
   return {
+    poll,
     stats() {
       const row = db
         .prepare('SELECT COUNT(*) AS n, MAX(ts) AS last FROM auth_events WHERE server_id IS ?')
@@ -185,6 +205,7 @@ export function createAuthentikPoller(opts) {
         cursor,
       };
     },
+    loadCursor,
     start() {
       loadCursor();
       if (cursorLoadFailed) log.warn('authentik cursor was unreadable, backfilling', { hours: backfillHours });
